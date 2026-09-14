@@ -124,8 +124,8 @@ def docker_full_cleanup(keep_images: bool = True) -> None:
     if not keep_images:
         run_cmd(["docker", "image", "prune", "-af"], timeout=120)
 
-    # Give the GPU driver a moment to release memory after container teardown
-    time.sleep(5)
+    # Wait for the GPU driver to release memory after container teardown.
+    wait_for_gpu_idle()
 
 
 def gpu_is_idle(max_mem_mb: int = 500) -> bool:
@@ -135,6 +135,27 @@ def gpu_is_idle(max_mem_mb: int = 500) -> bool:
     if snap is None:
         return True  # can't check -> don't block the run
     return snap["memory_used_mb"] <= max_mem_mb
+
+
+def wait_for_gpu_idle(max_mem_mb: int = 500, timeout_s: int = 60,
+                      poll_interval_s: float = 3.0) -> None:
+    """Wait for GPU memory to be released after container teardown.
+
+    The bounded wait avoids both a needless fixed delay and an infinite loop
+    if another process is legitimately using the GPU.
+    """
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if gpu_is_idle(max_mem_mb):
+            return
+        time.sleep(poll_interval_s)
+
+    snapshot = get_gpu_snapshot()
+    if snapshot is not None and snapshot["memory_used_mb"] > max_mem_mb:
+        raise RuntimeError(
+            f"GPU memory did not fall below {max_mem_mb} MB within {timeout_s}s "
+            f"(currently {snapshot['memory_used_mb']:.0f} MB)"
+        )
 
 
 # -------------------------------------------------------------------------
