@@ -80,7 +80,8 @@ def run_preflight(matrix: list, config_module, port: int,
     checks = []
     for experiment in matrix:
         pair = (experiment["model"]["id"], experiment["engine"])
-        if pair not in {item[:2] for item in checks}:
+        if pair not in seen:
+            seen.add(pair)
             checks.append((pair[0], pair[1], experiment["model"]))
 
     for index, (model_id, engine, model) in enumerate(checks, 1):
