@@ -19,17 +19,17 @@ finishes, so a restart can identify the single experiment that was in flight.
 
 ## Before you run
 
-1. The script performs a strict preflight before the first experiment. It
-   checks Docker and NVIDIA, pulls every configured engine image, and uses the
-   vLLM image to download every Hugging Face model into the shared cache. It
-   also checks that every configured TRT-LLM engine directory exists. A failed
-   preflight stops the benchmark; it does not create misleading partial rows.
+1. The script checks Docker and NVIDIA, then smoke-tests every model/engine
+   pair before the full matrix. Each check starts the engine, which pulls the
+   image and downloads/caches required model assets, waits for readiness, and
+   sends one request. Failed pairs are recorded in `engine_preflight.csv` and
+   excluded from the full matrix.
 
 2. **Edit `config.py`:**
    - `ENGINES["vllm"]["image"]`, `ENGINES["trtllm"]["image"]` — pin versions.
    - `ENGINES["nim"]["image_by_model"]` — map each model id to its real NIM
-     image tag. Every model/engine combination in the matrix must be mapped;
-     an unmapped model stops preflight so the run cannot silently omit coverage.
+     image tag. An unmapped or unsupported model is recorded as `cannot_run`
+     in the preflight report and its matrix rows are skipped.
 
 3. **Pre-build TensorRT-LLM engines.** Unlike vLLM, TRT-LLM needs a compiled
    engine per (model, quantization, batching) before this script runs. Put each one at:
@@ -37,15 +37,15 @@ finishes, so a restart can identify the single experiment that was in flight.
    ./trtllm_engines/<model_id>__<quantization>__<batching>/
    ```
    e.g. `./trtllm_engines/gpt-oss-20b__mxfp4__continuous_batching/`.
-   If any required directory is missing, preflight stops with the exact path.
+   A missing directory is recorded as `cannot_run` in the preflight report.
 
-3. Set credentials the containers need:
+4. Set credentials required by the selected model images:
    ```bash
    export HF_TOKEN=your_huggingface_token
-   export NGC_API_KEY=your_ngc_key
+   export NGC_API_KEY=your_ngc_personal_api_key  # only when the NIM image needs it
    ```
 
-4. `pip install -r requirements.txt --break-system-packages`
+5. `pip install -r requirements.txt --break-system-packages`
 
 ## Running it
 
@@ -53,8 +53,14 @@ finishes, so a restart can identify the single experiment that was in flight.
 # See the planned matrix without touching Docker or the GPU
 python3 run_benchmark.py --dry-run
 
+# Start every model/engine once, run one request, and save engine_preflight.csv
+python3 run_benchmark.py --preflight-only
+
 # Run everything (resumes automatically if it was interrupted before)
 python3 run_benchmark.py
+
+# Ignore cached final preflight checks and run them again
+python3 run_benchmark.py --refresh-preflight
 
 # Force a full restart, ignoring any previous results_summary.csv
 python3 run_benchmark.py --no-resume
@@ -85,6 +91,13 @@ Just re-run `python3 run_benchmark.py`. It reads the latest row for each
   TTFT/latency/token count, tagged with its `experiment_id` and
   concurrency level. Use this if you want distributions/histograms rather
   than just the aggregated percentiles in the summary file.
+
+- **`engine_preflight.csv`** — one smoke check per model/engine pair. A check
+  starts the container with continuous batching and the default KV cache,
+  waits for `/v1/models`, then sends one greedy request. The full matrix runs
+  only for pairs whose preflight status is `done`. `cannot_run` results are
+  cached; use `--refresh-preflight` after changing an image, token, engine,
+  or model configuration.
 
 ## Benchmark dataset and prompts
 

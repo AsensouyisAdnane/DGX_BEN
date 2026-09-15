@@ -39,17 +39,7 @@ def run_cmd(cmd: list, timeout: Optional[int] = None, check: bool = False):
 
 
 def prepare_benchmark_prerequisites(matrix: list, config_module) -> None:
-    """Pull every image and download every HF model before any experiment.
-
-    TRT-LLM engines are local build artifacts, so their presence is checked
-    here. NIM model assets are image/cache-specific; pulling the mapped image
-    and starting it during the first experiment is the only portable way to
-    validate those assets.
-    """
-    if not os.environ.get("HF_TOKEN"):
-        raise RuntimeError("HF_TOKEN is required for model preparation")
-    if any(exp["engine"] == "nim" for exp in matrix) and not os.environ.get("NGC_API_KEY"):
-        raise RuntimeError("NGC_API_KEY is required for NIM preparation")
+    """Validate the host before per-engine smoke checks prepare model assets."""
 
     check = run_cmd(["docker", "version"], timeout=30)
     if check.returncode != 0:
@@ -57,43 +47,6 @@ def prepare_benchmark_prerequisites(matrix: list, config_module) -> None:
     check = run_cmd(["nvidia-smi"], timeout=30)
     if check.returncode != 0:
         raise RuntimeError(f"nvidia-smi is not available: {check.stderr.strip()}")
-
-    images = set()
-    for exp in matrix:
-        engine_cfg = config_module.ENGINES[exp["engine"]]
-        image = engine_cfg.get("image_by_model", {}).get(exp["model"]["id"], engine_cfg.get("image"))
-        if not image:
-            raise RuntimeError(f"No image configured for {exp['engine']} / {exp['model']['id']}")
-        images.add(image)
-    for image in sorted(images):
-        result = run_cmd(["docker", "pull", image], timeout=3600)
-        if result.returncode != 0:
-            raise RuntimeError(f"Could not pull image '{image}': {result.stderr.strip()}")
-
-    cache_dir = os.path.expanduser("~/.cache/huggingface")
-    os.makedirs(cache_dir, exist_ok=True)
-    models = {exp["model"]["hf_path"] for exp in matrix}
-    vllm_image = config_module.ENGINES["vllm"]["image"]
-    for model_id in sorted(models):
-        result = run_cmd([
-            "docker", "run", "--rm", "--gpus", "all", "-e", "HF_TOKEN",
-            "-v", f"{cache_dir}:/root/.cache/huggingface",
-            "--entrypoint", "python", vllm_image, "-c",
-            "from huggingface_hub import snapshot_download; snapshot_download(repo_id='" + model_id + "')",
-        ], timeout=3600)
-        if result.returncode != 0:
-            raise RuntimeError(f"Could not prepare Hugging Face model '{model_id}': {result.stderr.strip()}")
-
-    for exp in matrix:
-        if exp["engine"] != "trtllm":
-            continue
-        cfg = config_module.ENGINES["trtllm"]
-        path = cfg["engine_dir_template"].format(
-            model_id=exp["model"]["id"], quant=exp["model"]["quantization_default"], batching=exp["batching"]
-        )
-        if not os.path.isdir(path) or not os.listdir(path):
-            raise RuntimeError(f"Missing pre-built TensorRT-LLM engine: {path}")
-
 
 # -------------------------------------------------------------------------
 # Cleanup
@@ -310,7 +263,8 @@ def stop_container(container: RunningContainer) -> None:
     run_cmd(["docker", "rm", "-f", container.name], timeout=30)
 
 
-def wait_for_ready(port: int, timeout_s: int, poll_interval_s: int) -> float:
+def wait_for_ready(port: int, timeout_s: int, poll_interval_s: int,
+                   container_name: Optional[str] = None) -> float:
     """Poll the OpenAI-compatible /v1/models endpoint. Returns load time
     in seconds, or raises TimeoutError."""
     start = time.time()
@@ -322,6 +276,12 @@ def wait_for_ready(port: int, timeout_s: int, poll_interval_s: int) -> float:
                 return time.time() - start
         except requests.RequestException:
             pass
+        if container_name:
+            state = run_cmd(["docker", "inspect", "-f", "{{.State.Status}}", container_name])
+            if state.returncode == 0 and state.stdout.strip() in {"dead", "exited"}:
+                logs = run_cmd(["docker", "logs", "--tail", "50", container_name])
+                detail = (logs.stdout + logs.stderr).strip()[-2000:]
+                raise RuntimeError(f"Container exited before becoming ready: {detail}")
         time.sleep(poll_interval_s)
     raise TimeoutError(f"Service on port {port} did not become healthy within {timeout_s}s")
 

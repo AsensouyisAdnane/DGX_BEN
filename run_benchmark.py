@@ -45,6 +45,7 @@ from docker_utils import (
 )
 from engine_runners import ENGINE_RUNNERS
 from bench_client import run_full_sweep
+from engine_preflight import STATUS_DONE, run_preflight
 
 logging.basicConfig(
     level=logging.INFO,
@@ -142,7 +143,8 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
 
         log.info("Waiting for service to become healthy...")
         load_time_s = wait_for_ready(
-            port, config.HEALTH_CHECK_TIMEOUT_S, config.HEALTH_CHECK_POLL_INTERVAL_S
+            port, config.HEALTH_CHECK_TIMEOUT_S, config.HEALTH_CHECK_POLL_INTERVAL_S,
+            container.name
         )
         row["load_time_s"] = round(load_time_s, 2)
         served_model = get_served_model(port)
@@ -240,6 +242,10 @@ def main():
                          help="Ignore existing results_summary.csv and rerun everything")
     parser.add_argument("--dry-run", action="store_true",
                          help="Print the planned experiment matrix and exit")
+    parser.add_argument("--preflight-only", action="store_true",
+                        help="Run cached model/engine smoke checks, then exit")
+    parser.add_argument("--refresh-preflight", action="store_true",
+                        help="Rerun smoke checks even when a cached final result exists")
     parser.add_argument("--port", type=int, default=8000,
                          help="Local port used to reach each container's API")
     args = parser.parse_args()
@@ -252,8 +258,21 @@ def main():
             print(f"  {exp['experiment_id']}")
         return
 
-    log.info("Preparing Docker images, model weights, and TRT-LLM artifacts before experiments...")
+    log.info("Checking Docker and GPU availability...")
     prepare_benchmark_prerequisites(matrix, config)
+
+    log.info("Running model/engine smoke checks before the full matrix...")
+    preflight_statuses = run_preflight(
+        matrix, config, args.port, refresh=args.refresh_preflight
+    )
+    passed_pairs = {
+        pair for pair, status in preflight_statuses.items() if status == STATUS_DONE
+    }
+    log.info("Preflight passed for %d/%d model/engine pairs. Results: %s",
+             len(passed_pairs), len(preflight_statuses), config.PREFLIGHT_CSV)
+
+    if args.preflight_only:
+        return
 
     summary_logger = ResultLogger(config.RESULTS_CSV, SUMMARY_COLUMNS)
     detailed_logger = ResultLogger(config.DETAILED_CSV, DETAILED_COLUMNS)
@@ -262,7 +281,11 @@ def main():
     if completed:
         log.info(f"Resuming: {len(completed)} experiments already completed, will skip those.")
 
-    remaining = [exp for exp in matrix if exp["experiment_id"] not in completed]
+    remaining = [
+        exp for exp in matrix
+        if exp["experiment_id"] not in completed
+        and (exp["model"]["id"], exp["engine"]) in passed_pairs
+    ]
     log.info(f"Total experiments: {len(matrix)} | Remaining to run: {len(remaining)}")
 
     for i, exp in enumerate(remaining, 1):

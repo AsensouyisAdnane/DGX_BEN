@@ -231,4 +231,5 @@ GPU_MONITOR_INTERVAL_S = 2
 
 RESULTS_CSV = "results_summary.csv"
 DETAILED_CSV = "results_detailed_requests.csv"
+PREFLIGHT_CSV = "engine_preflight.csv"
 LOG_FILE = "benchmark_run.log"
