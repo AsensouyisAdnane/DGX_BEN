@@ -289,11 +289,19 @@ def stop_container(container: RunningContainer) -> None:
     run_cmd(["docker", "rm", "-f", container.name], timeout=30)
 
 
-def save_container_logs(container: RunningContainer, trace_path: str) -> None:
-    """Persist the engine's Docker logs before the container is removed."""
+def save_container_logs(container: RunningContainer, trace_path: str,
+                        full: bool = True, tail_lines: int = 200) -> None:
+    """Persist Docker logs before explicit container cleanup.
+
+    Full logs are useful for preflight and failures. Successful benchmark runs
+    can retain only a bounded tail to avoid creating hundreds of huge files.
+    """
     if container is None:
         return
-    result = run_cmd(["docker", "logs", container.name], timeout=30)
+    cmd = ["docker", "logs", container.name]
+    if not full:
+        cmd[2:2] = ["--tail", str(tail_lines)]
+    result = run_cmd(cmd, timeout=30)
     Path(trace_path).parent.mkdir(parents=True, exist_ok=True)
     Path(trace_path).write_text(result.stdout + result.stderr)
 

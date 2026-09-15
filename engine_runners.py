@@ -53,7 +53,7 @@ def start_vllm(model: dict, batching: str, kv_cache: str, port: int) -> RunningC
     if kv_cache == "fp8_kv_cache":
         entrypoint_args += ["--kv-cache-dtype", "fp8"]
 
-    docker_args = ["--rm", *HF_CACHE_MOUNT, "-e", "HF_TOKEN"]
+    docker_args = [*HF_CACHE_MOUNT, "-e", "HF_TOKEN"]
 
     cid = docker_run_detached(cfg["image"], name, port, docker_args, entrypoint_args)
     return RunningContainer(name=name, port=port, container_id=cid)
@@ -74,7 +74,7 @@ def start_trtllm(model: dict, batching: str, kv_cache: str, port: int) -> Runnin
         )
 
     name = f"bench_trtllm_{model['id']}_{uuid.uuid4().hex[:6]}"
-    docker_args = ["--rm", "-v", f"{os.path.abspath(engine_dir)}:/engine"]
+    docker_args = ["-v", f"{os.path.abspath(engine_dir)}:/engine"]
     entrypoint_args = [
         "trtllm-serve", "/engine",
         "--port", str(port),
@@ -101,7 +101,6 @@ def start_nim(model: dict, batching: str, kv_cache: str, port: int) -> RunningCo
 
     name = f"bench_nim_{model['id']}_{uuid.uuid4().hex[:6]}"
     docker_args = [
-        "--rm",
         "-v", f"{os.path.expanduser('~')}/.cache/nim:/opt/nim/.cache",
     ]
     if os.environ.get("NGC_API_KEY"):

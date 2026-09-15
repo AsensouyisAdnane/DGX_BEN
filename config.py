@@ -230,7 +230,7 @@ HEALTH_CHECK_POLL_INTERVAL_S = 5
 PER_REQUEST_TIMEOUT_S = 180
 GPU_MONITOR_INTERVAL_S = 2
 PROGRESS_INTERVAL_S = 5
-TRACE_DIR = "engine_traces"
+TRACE_DIR = "docker_logs"
 
 # =========================================================================
 # 5. OUTPUT FILES

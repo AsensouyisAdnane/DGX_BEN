@@ -224,7 +224,7 @@ def run_preflight(matrix: list, config_module, port: int,
                         row["status"], row["failure_reason"])
         finally:
             try:
-                save_container_logs(container, row["container_log_file"])
+                save_container_logs(container, row["container_log_file"], full=True)
             except Exception as trace_error:
                 log.warning("Could not save container trace: %s", trace_error)
             stop_container(container)

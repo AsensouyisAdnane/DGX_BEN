@@ -274,7 +274,11 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
 
     finally:
         try:
-            save_container_logs(container, row["container_log_file"])
+            save_container_logs(
+                container,
+                row["container_log_file"],
+                full=row.get("status") != STATUS_DONE,
+            )
         except Exception as trace_error:
             log.warning("Could not save container trace: %s", trace_error)
         stop_container(container)
