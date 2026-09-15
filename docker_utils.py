@@ -324,9 +324,13 @@ def wait_for_ready(port: int, timeout_s: Optional[int], poll_interval_s: int,
             log_result = run_cmd(["docker", "logs", "--tail", "10", container_name])
             log_lines = (log_result.stdout + log_result.stderr).strip().splitlines()
             latest_log = log_lines[-1][-500:] if log_lines else ""
-            if container_state in {"dead", "exited"}:
+            if container_state in {"dead", "exited", "unavailable"}:
                 logs = run_cmd(["docker", "logs", "--tail", "50", container_name])
                 detail = (logs.stdout + logs.stderr).strip()[-2000:]
+                if container_state == "unavailable":
+                    raise RuntimeError(
+                        f"Container disappeared before becoming ready: {detail or 'no container logs available'}"
+                    )
                 raise RuntimeError(f"Container exited before becoming ready: {detail}")
         elapsed = int(time.time() - start)
         if progress_callback and elapsed - last_progress_report >= progress_interval_s:
