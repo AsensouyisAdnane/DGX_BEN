@@ -39,6 +39,16 @@ def run_cmd(cmd: list, timeout: Optional[int] = None, check: bool = False):
         raise RuntimeError(f"Command timed out after {timeout}s: {' '.join(cmd)}") from e
 
 
+def ensure_docker_image(image: str, timeout_s: int = 3600) -> None:
+    """Ensure an image is local before container startup is timed."""
+    inspect = run_cmd(["docker", "image", "inspect", image], timeout=30)
+    if inspect.returncode == 0:
+        return
+    result = run_cmd(["docker", "pull", image], timeout=timeout_s)
+    if result.returncode != 0:
+        raise RuntimeError(f"Could not pull image '{image}': {result.stderr.strip()}")
+
+
 def prepare_benchmark_prerequisites(matrix: list, config_module) -> None:
     """Validate the host before per-engine smoke checks prepare model assets."""
 

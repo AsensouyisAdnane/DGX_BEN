@@ -11,6 +11,7 @@ from docker_utils import (
     docker_full_cleanup,
     get_gpu_snapshot,
     get_served_model,
+    ensure_docker_image,
     run_cmd,
     save_container_logs,
     stop_container,
@@ -107,7 +108,7 @@ def classify_failure(error: Exception) -> str:
 def verify_vllm_dns(image: str) -> str:
     """Verify DNS from the actual vLLM image before model download begins."""
     result = run_cmd([
-        "docker", "run", "--rm", "--entrypoint", "python", image, "-c",
+        "docker", "run", "--rm", "--entrypoint", "python3", image, "-c",
         "import socket; print(socket.gethostbyname('huggingface.co'))",
     ], timeout=30)
     if result.returncode != 0:
@@ -163,6 +164,9 @@ def run_preflight(matrix: list, config_module, port: int,
                      index, len(checks), model["id"], engine)
             if not row["engine_image"]:
                 raise NotImplementedError(f"No image configured for {model['id']} / {engine}")
+            log.info("[preflight %d/%d] %s / %s: ensuring image is available locally...",
+                     index, len(checks), model["id"], engine)
+            ensure_docker_image(row["engine_image"], timeout_s=3600)
             if engine == "vllm":
                 log.info("[preflight %d/%d] %s / vllm: checking container DNS for huggingface.co...",
                          index, len(checks), model["id"])
