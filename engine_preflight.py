@@ -11,6 +11,7 @@ from docker_utils import (
     docker_full_cleanup,
     get_gpu_snapshot,
     get_served_model,
+    run_cmd,
     save_container_logs,
     stop_container,
     wait_for_ready,
@@ -24,6 +25,7 @@ PREFLIGHT_COLUMNS = [
     "model_hf_path",
     "engine",
     "engine_image",
+    "network_check",
     "quantization",
     "status",
     "failure_reason",
@@ -102,6 +104,18 @@ def classify_failure(error: Exception) -> str:
     return STATUS_TERMINATED
 
 
+def verify_vllm_dns(image: str) -> str:
+    """Verify DNS from the actual vLLM image before model download begins."""
+    result = run_cmd([
+        "docker", "run", "--rm", "--entrypoint", "python", image, "-c",
+        "import socket; print(socket.gethostbyname('huggingface.co'))",
+    ], timeout=30)
+    if result.returncode != 0:
+        detail = (result.stdout + result.stderr).strip()[-1000:]
+        raise ConnectionError(f"Container DNS cannot resolve huggingface.co: {detail}")
+    return result.stdout.strip()
+
+
 def run_preflight(matrix: list, config_module, port: int,
                   refresh: bool = False) -> dict:
     """Return the latest status for each (model_id, engine) pair."""
@@ -134,6 +148,7 @@ def run_preflight(matrix: list, config_module, port: int,
             "model_hf_path": model["hf_path"],
             "engine": engine,
             "engine_image": engine_image(model, engine, config_module),
+            "network_check": "not_required",
             "quantization": model["quantization_default"],
             "hf_token_present": bool(os.environ.get("HF_TOKEN")),
             "ngc_api_key_present": bool(os.environ.get("NGC_API_KEY")),
@@ -148,6 +163,10 @@ def run_preflight(matrix: list, config_module, port: int,
                      index, len(checks), model["id"], engine)
             if not row["engine_image"]:
                 raise NotImplementedError(f"No image configured for {model['id']} / {engine}")
+            if engine == "vllm":
+                log.info("[preflight %d/%d] %s / vllm: checking container DNS for huggingface.co...",
+                         index, len(checks), model["id"])
+                row["network_check"] = f"huggingface.co={verify_vllm_dns(row['engine_image'])}"
             docker_full_cleanup()
             container = ENGINE_RUNNERS[engine](model, "continuous_batching", "default", port)
             log.info("[preflight %d/%d] %s / %s: loading model...",

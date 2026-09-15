@@ -25,7 +25,8 @@ HF_CACHE_MOUNT = ["-v", f"{os.path.expanduser('~')}/.cache/huggingface:/root/.ca
 def model_artifact_path(model: dict, engine: str) -> str:
     """Host path whose growth indicates model/profile download progress."""
     if engine == "vllm":
-        return os.path.expanduser("~/.cache/huggingface")
+        repository = model["hf_path"].replace("/", "--")
+        return os.path.expanduser(f"~/.cache/huggingface/hub/models--{repository}")
     if engine == "nim":
         return os.path.expanduser("~/.cache/nim")
     cfg = ENGINES["trtllm"]
@@ -42,7 +43,7 @@ def start_vllm(model: dict, batching: str, kv_cache: str, port: int) -> RunningC
     quant = model["quantization_default"]
 
     entrypoint_args = [
-        "--model", model["hf_path"],
+        model["hf_path"],
         "--port", str(port),
         "--max-num-seqs", str(max_num_seqs),
         "--trust-remote-code",
