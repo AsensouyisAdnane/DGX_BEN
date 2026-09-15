@@ -106,14 +106,16 @@ def classify_failure(error: Exception) -> str:
 
 
 def verify_vllm_dns(image: str) -> str:
-    """Verify DNS from the actual vLLM image before model download begins."""
+    """Verify DNS and HTTPS access from the actual vLLM image."""
     result = run_cmd([
         "docker", "run", "--rm", "--entrypoint", "python3", image, "-c",
-        "import socket; socket.setdefaulttimeout(5); print(socket.gethostbyname('huggingface.co'))",
+        "import socket, urllib.request; socket.setdefaulttimeout(5); "
+        "addresses=sorted({item[4][0] for item in socket.getaddrinfo('huggingface.co', 443, type=socket.SOCK_STREAM)}); "
+        "urllib.request.urlopen('https://huggingface.co', timeout=5).close(); print(','.join(addresses))",
     ], timeout=10)
     if result.returncode != 0:
         detail = (result.stdout + result.stderr).strip()[-1000:]
-        raise ConnectionError(f"Container DNS cannot resolve huggingface.co: {detail}")
+        raise ConnectionError(f"Container cannot reach huggingface.co (DNS/HTTPS): {detail}")
     return result.stdout.strip()
 
 
