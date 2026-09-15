@@ -9,6 +9,7 @@ from bench_client import send_one_request
 from csv_logger import ResultLogger
 from docker_utils import (
     docker_full_cleanup,
+    CONTAINER_NETWORK_MODE,
     get_gpu_snapshot,
     get_served_model,
     ensure_docker_image,
@@ -108,7 +109,8 @@ def classify_failure(error: Exception) -> str:
 def verify_vllm_dns(image: str) -> str:
     """Verify DNS and HTTPS access from the actual vLLM image."""
     result = run_cmd([
-        "docker", "run", "--rm", "--entrypoint", "python3", image, "-c",
+        "docker", "run", "--rm", "--network", CONTAINER_NETWORK_MODE,
+        "--entrypoint", "python3", image, "-c",
         "import socket, urllib.request; socket.setdefaulttimeout(5); "
         "addresses=sorted({item[4][0] for item in socket.getaddrinfo('huggingface.co', 443, type=socket.SOCK_STREAM)}); "
         "urllib.request.urlopen('https://huggingface.co', timeout=5).close(); print(','.join(addresses))",

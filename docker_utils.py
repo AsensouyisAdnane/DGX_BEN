@@ -12,6 +12,12 @@ to repeat) before every single experiment, not just between models.
 import json
 import os
 from pathlib import Path
+
+
+# DGX Spark's Docker bridge cannot resolve external DNS, while host networking
+# has been verified to reach Hugging Face. Keep this in one place so benchmark
+# containers and their preflight checks use the same network path.
+CONTAINER_NETWORK_MODE = "host"
 import subprocess
 import threading
 import time
@@ -262,7 +268,7 @@ def docker_run_detached(
         "docker", "run", "-d",
         "--gpus", "all",
         "--name", container_name,
-        "-p", f"{port}:{port}",
+        "--network", CONTAINER_NETWORK_MODE,
         "--ipc=host",
         *docker_args,
         image,
