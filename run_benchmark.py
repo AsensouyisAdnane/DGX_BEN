@@ -32,9 +32,9 @@ import sys
 import time
 from datetime import datetime, timezone
 
-import DGX_BENCHMARK.DGX_BEN.config as config
-from DGX_BENCHMARK.DGX_BEN.csv_logger import ResultLogger, SUMMARY_COLUMNS, DETAILED_COLUMNS
-from DGX_BENCHMARK.DGX_BEN.docker_utils import (
+import config
+from csv_logger import ResultLogger, SUMMARY_COLUMNS, DETAILED_COLUMNS
+from docker_utils import (
     docker_full_cleanup,
     GpuMonitor,
     get_driver_versions,
@@ -43,8 +43,8 @@ from DGX_BENCHMARK.DGX_BEN.docker_utils import (
     get_served_model,
     prepare_benchmark_prerequisites,
 )
-from DGX_BENCHMARK.DGX_BEN.engine_runners import ENGINE_RUNNERS
-from DGX_BENCHMARK.DGX_BEN.bench_client import run_full_sweep
+from engine_runners import ENGINE_RUNNERS
+from bench_client import run_full_sweep
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +52,11 @@ logging.basicConfig(
     handlers=[logging.FileHandler(config.LOG_FILE), logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger("dgx_bench")
+
+STATUS_RUNNING = "running"
+STATUS_DONE = "done"
+STATUS_CANNOT_RUN = "cannot_run"
+STATUS_TERMINATED = "terminated_with_error"
 
 
 def build_experiment_matrix() -> list:
@@ -94,7 +99,22 @@ def base_row(exp: dict) -> dict:
         "max_output_tokens": exp["prompt_case"]["max_output_tokens"],
         "sampling_parameters": (f"temperature={exp['sampling']['temperature']},"
                                  f"top_p={exp['sampling']['top_p']}"),
+        "status": STATUS_RUNNING,
     }
+
+
+def classify_failure(error: Exception) -> str:
+    """Separate permanent engine/configuration failures from retryable errors."""
+    message = str(error).lower()
+    permanent_types = (FileNotFoundError, NotImplementedError, KeyError)
+    permanent_markers = (
+        "out of memory", "cuda out of memory", "does not fit", "not enough memory",
+        "not supported", "no nim image", "missing pre-built", "repository not found",
+        "model not found", "access denied", "unauthorized", "invalid model",
+    )
+    if isinstance(error, permanent_types) or any(marker in message for marker in permanent_markers):
+        return STATUS_CANNOT_RUN
+    return STATUS_TERMINATED
 
 
 def run_one_experiment(exp: dict, summary_logger: ResultLogger,
@@ -108,6 +128,9 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
     monitor = GpuMonitor(interval_s=config.GPU_MONITOR_INTERVAL_S)
 
     log.info(f"=== START {exp['experiment_id']} ===")
+    # Persist an in-flight marker before Docker/GPU work starts. If the
+    # machine loses power, the next invocation will retry this one only.
+    summary_logger.append_row(row)
 
     try:
         log.info("Cleaning docker environment before run...")
@@ -142,10 +165,12 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
 
         if not sweep["overall_success"]:
             row["worked"] = "no"
+            row["status"] = STATUS_TERMINATED
             row["failure_reason"] = "All requests failed at every concurrency level"
         else:
             best = sweep["best_level_summary"]
             row["worked"] = "yes"
+            row["status"] = STATUS_DONE
             row["failure_reason"] = ""
             input_token_counts = [
                 r.input_tokens for level in sweep["per_level"]
@@ -182,11 +207,19 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
         log.info(f"Result: worked={row.get('worked')} "
                   f"max_stable_concurrency={row.get('max_stable_concurrency')}")
 
+    except KeyboardInterrupt:
+        monitor.stop()
+        row["worked"] = "no"
+        row["status"] = STATUS_TERMINATED
+        row["failure_reason"] = "Benchmark interrupted by user"
+        log.warning(f"Experiment interrupted: {exp['experiment_id']}")
+        raise
     except Exception as e:
         monitor.stop()
         row["worked"] = "no"
+        row["status"] = classify_failure(e)
         row["failure_reason"] = str(e)[:500]
-        log.warning(f"Experiment failed: {row['failure_reason']}")
+        log.warning(f"Experiment failed: status={row['status']} reason={row['failure_reason']}")
 
     finally:
         stop_container(container)

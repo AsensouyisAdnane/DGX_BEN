@@ -2,9 +2,9 @@
 
 Runs the full model x engine x batching x KV-cache x prompt x sampling matrix on a single DGX
 Spark, cleaning the Docker/GPU environment before **every** run so all
-configurations are tested on identical infrastructure, and saving one row
-to CSV **immediately** after each experiment finishes so a crash never
-costs more than the single run in flight.
+configurations are tested on identical infrastructure. It writes an in-flight
+status marker before each run and a final status row immediately after it
+finishes, so a restart can identify the single experiment that was in flight.
 
 ## Files
 
@@ -66,15 +66,16 @@ will take many hours, most of it model load time for the bigger models.
 
 ## If the DGX crashes or you need to stop it
 
-Just re-run `python3 run_benchmark.py`. It reads `results_summary.csv`,
-skips every `experiment_id` already present, and continues where it left
-off. Nothing before the crash is lost — every row was fsync'd to disk the
-moment that experiment finished.
+Just re-run `python3 run_benchmark.py`. It reads the latest row for each
+`experiment_id` in `results_summary.csv`, skips only `done` and
+`cannot_run` experiments, and retries `terminated_with_error` and stale
+`running` experiments. Each status row is fsync'd to disk.
 
 ## Output
 
-- **`results_summary.csv`** — one row per experiment: model, engine,
-  batching, KV-cache mode, worked (yes/no) + failure reason, load time,
+- **`results_summary.csv`** — experiment status (`done`, `cannot_run`, or
+  `terminated_with_error`), model, engine, batching, KV-cache mode, worked
+  (yes/no) + failure reason, load time,
   max stable concurrency, throughput (tokens/s and req/s), TTFT and
   latency (mean/p50/p95), GPU memory/utilization/power/temperature
   (peak + avg), driver/CUDA version, total run duration. This is the file

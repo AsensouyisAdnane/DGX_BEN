@@ -33,6 +33,7 @@ SUMMARY_COLUMNS = [
     "prompt_tokens_actual",
     "max_output_tokens",
     "sampling_parameters",
+    "status",
     "worked",                 # yes / no
     "failure_reason",
     "load_time_s",
@@ -98,13 +99,26 @@ class ResultLogger:
             os.fsync(f.fileno())
 
     def load_completed_experiment_ids(self) -> set:
+        """Return experiments that are safe to skip when resuming.
+
+        The CSV is append-only, so an experiment can have a starting
+        ``running`` row followed by a final row. The last row wins.
+        Legacy files without ``status`` are treated conservatively: only
+        rows with worked=yes are considered complete.
+        """
         if not os.path.exists(self.csv_path):
             return set()
-        done = set()
+        latest = {}
         with open(self.csv_path, "r", newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 exp_id = row.get("experiment_id")
                 if exp_id:
-                    done.add(exp_id)
-        return done
+                    latest[exp_id] = row
+
+        skip_statuses = {"done", "cannot_run", "can't_run"}
+        return {
+            exp_id for exp_id, row in latest.items()
+            if row.get("status") in skip_statuses
+            or (not row.get("status") and row.get("worked") == "yes")
+        }

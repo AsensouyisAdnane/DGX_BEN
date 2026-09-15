@@ -16,8 +16,8 @@ not a bug to hide.
 import os
 import uuid
 
-from DGX_BENCHMARK.DGX_BEN.config import ENGINES
-from DGX_BENCHMARK.DGX_BEN.docker_utils import RunningContainer, docker_run_detached, ContainerStartError
+from config import ENGINES
+from docker_utils import RunningContainer, docker_run_detached, ContainerStartError
 
 HF_CACHE_MOUNT = ["-v", f"{os.path.expanduser('~')}/.cache/huggingface:/root/.cache/huggingface"]
 
