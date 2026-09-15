@@ -109,8 +109,8 @@ def verify_vllm_dns(image: str) -> str:
     """Verify DNS from the actual vLLM image before model download begins."""
     result = run_cmd([
         "docker", "run", "--rm", "--entrypoint", "python3", image, "-c",
-        "import socket; print(socket.gethostbyname('huggingface.co'))",
-    ], timeout=30)
+        "import socket; socket.setdefaulttimeout(5); print(socket.gethostbyname('huggingface.co'))",
+    ], timeout=10)
     if result.returncode != 0:
         detail = (result.stdout + result.stderr).strip()[-1000:]
         raise ConnectionError(f"Container DNS cannot resolve huggingface.co: {detail}")
@@ -124,6 +124,7 @@ def run_preflight(matrix: list, config_module, port: int,
     cached = load_cached_checks(logger)
     statuses = {}
     seen = set()
+    dns_results = {}
     checks = []
     for experiment in matrix:
         pair = (experiment["model"]["id"], experiment["engine"])
@@ -170,7 +171,16 @@ def run_preflight(matrix: list, config_module, port: int,
             if engine == "vllm":
                 log.info("[preflight %d/%d] %s / vllm: checking container DNS for huggingface.co...",
                          index, len(checks), model["id"])
-                row["network_check"] = f"huggingface.co={verify_vllm_dns(row['engine_image'])}"
+                if row["engine_image"] not in dns_results:
+                    try:
+                        dns_results[row["engine_image"]] = (True, verify_vllm_dns(row["engine_image"]))
+                    except Exception as dns_error:
+                        dns_results[row["engine_image"]] = (False, str(dns_error))
+                dns_ok, dns_value = dns_results[row["engine_image"]]
+                if not dns_ok:
+                    row["network_check"] = f"failed: {dns_value}"[:2000]
+                    raise ConnectionError(f"vLLM image network check failed: {dns_value}")
+                row["network_check"] = f"huggingface.co={dns_value}"
             docker_full_cleanup()
             container = ENGINE_RUNNERS[engine](model, "continuous_batching", "default", port)
             log.info("[preflight %d/%d] %s / %s: loading model...",
