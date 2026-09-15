@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 
@@ -273,10 +273,12 @@ def stop_container(container: RunningContainer) -> None:
 
 
 def wait_for_ready(port: int, timeout_s: int, poll_interval_s: int,
-                   container_name: Optional[str] = None) -> float:
+                   container_name: Optional[str] = None,
+                   progress_callback: Optional[Callable[[int], None]] = None) -> float:
     """Poll the OpenAI-compatible /v1/models endpoint. Returns load time
     in seconds, or raises TimeoutError."""
     start = time.time()
+    last_progress_report = -30
     url = f"http://localhost:{port}/v1/models"
     while time.time() - start < timeout_s:
         try:
@@ -291,6 +293,10 @@ def wait_for_ready(port: int, timeout_s: int, poll_interval_s: int,
                 logs = run_cmd(["docker", "logs", "--tail", "50", container_name])
                 detail = (logs.stdout + logs.stderr).strip()[-2000:]
                 raise RuntimeError(f"Container exited before becoming ready: {detail}")
+        elapsed = int(time.time() - start)
+        if progress_callback and elapsed - last_progress_report >= 30:
+            progress_callback(elapsed)
+            last_progress_report = elapsed
         time.sleep(poll_interval_s)
     raise TimeoutError(f"Service on port {port} did not become healthy within {timeout_s}s")
 

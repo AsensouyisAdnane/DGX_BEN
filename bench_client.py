@@ -145,16 +145,26 @@ def run_concurrency_level(base_url: str, concurrency: int, num_requests: int,
 
 def run_full_sweep(base_url: str, concurrency_levels: list, num_requests_per_level: int,
                     prompt: str, max_tokens: int, timeout_s: int, model_name: str,
-                    temperature: float, top_p: float) -> dict:
+                    temperature: float, top_p: float, progress_callback=None) -> dict:
     """Runs every concurrency level and returns both per-level results and a
     single-row summary (used for the main results CSV)."""
     per_level = []
     for c in concurrency_levels:
+        if progress_callback:
+            progress_callback(f"load test: concurrency={c}, requests={num_requests_per_level}")
         level_result = run_concurrency_level(
             base_url, c, num_requests_per_level, prompt, max_tokens, timeout_s,
             model_name, temperature, top_p
         )
         per_level.append(level_result)
+        if progress_callback:
+            progress_callback(
+                f"load test complete: concurrency={c}, "
+                f"success={level_result['requests_succeeded']}/{level_result['requests_sent']}, "
+                f"throughput={level_result['throughput_tokens_per_s']:.1f} tok/s"
+                if level_result["throughput_tokens_per_s"] is not None
+                else f"load test complete: concurrency={c}, no successful requests"
+            )
         # If EVERY request failed at this concurrency, no point climbing higher
         if level_result["requests_succeeded"] == 0:
             break

@@ -134,22 +134,27 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
     summary_logger.append_row(row)
 
     try:
-        log.info("Cleaning docker environment before run...")
+        log.info("Phase 1/4 cleanup: removing previous benchmark state and waiting for GPU memory...")
         docker_full_cleanup()
 
         runner = ENGINE_RUNNERS[exp["engine"]]
-        log.info(f"Starting container for engine={exp['engine']} model={exp['model']['id']}...")
+        log.info(f"Phase 2/4 startup: engine={exp['engine']} model={exp['model']['id']} "
+                 f"batching={exp['batching']} kv_cache={exp['kv_cache']}...")
         container = runner(exp["model"], exp["batching"], exp["kv_cache"], port)
 
-        log.info("Waiting for service to become healthy...")
+        log.info("Phase 3/4 loading: waiting for the model service to become ready...")
         load_time_s = wait_for_ready(
             port, config.HEALTH_CHECK_TIMEOUT_S, config.HEALTH_CHECK_POLL_INTERVAL_S,
-            container.name
+            container.name,
+            lambda elapsed: log.info(
+                f"Still loading {exp['model']['id']} on {exp['engine']}: "
+                f"{elapsed}s/{config.HEALTH_CHECK_TIMEOUT_S}s"
+            ),
         )
         row["load_time_s"] = round(load_time_s, 2)
         served_model = get_served_model(port)
 
-        log.info("Running concurrency sweep load test...")
+        log.info("Phase 4/4 benchmarking: running concurrency sweep...")
         monitor.start()
         sweep = run_full_sweep(
             base_url=f"http://localhost:{port}",
@@ -161,6 +166,7 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
             model_name=served_model,
             temperature=exp["sampling"]["temperature"],
             top_p=exp["sampling"]["top_p"],
+            progress_callback=log.info,
         )
         monitor.stop()
         row.update(monitor.summary())
@@ -225,7 +231,7 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
 
     finally:
         stop_container(container)
-        log.info("Cleaning docker environment after run...")
+        log.info("Cleanup: stopping container and waiting for GPU memory release...")
         try:
             docker_full_cleanup()
         except Exception as cleanup_err:

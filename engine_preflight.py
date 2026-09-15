@@ -2,6 +2,7 @@
 
 import os
 import time
+import logging
 from datetime import datetime, timezone
 
 from bench_client import send_one_request
@@ -29,6 +30,7 @@ PREFLIGHT_COLUMNS = [
 STATUS_DONE = "done"
 STATUS_CANNOT_RUN = "cannot_run"
 STATUS_TERMINATED = "terminated_with_error"
+log = logging.getLogger("dgx_bench")
 
 
 def engine_image(model: dict, engine: str, config_module) -> str:
@@ -75,19 +77,21 @@ def run_preflight(matrix: list, config_module, port: int,
     cached = load_cached_checks(logger)
     statuses = {}
     seen = set()
-
+    checks = []
     for experiment in matrix:
-        model = experiment["model"]
-        engine = experiment["engine"]
-        pair = (model["id"], engine)
-        if pair in seen:
-            continue
-        seen.add(pair)
+        pair = (experiment["model"]["id"], experiment["engine"])
+        if pair not in {item[:2] for item in checks}:
+            checks.append((pair[0], pair[1], experiment["model"]))
+
+    for index, (model_id, engine, model) in enumerate(checks, 1):
+        pair = (model_id, engine)
 
         current_check_id = check_id(model, engine, config_module)
         cached_row = cached.get(current_check_id)
         if not refresh and cached_row and cached_row.get("status") in {STATUS_DONE, STATUS_CANNOT_RUN}:
             statuses[pair] = cached_row["status"]
+            log.info("[preflight %d/%d] %s / %s: cached status=%s",
+                     index, len(checks), model["id"], engine, cached_row["status"])
             continue
 
         row = {
@@ -103,17 +107,28 @@ def run_preflight(matrix: list, config_module, port: int,
         }
         container = None
         try:
+            log.info("[preflight %d/%d] %s / %s: checking image and starting service...",
+                     index, len(checks), model["id"], engine)
             if not row["engine_image"]:
                 raise NotImplementedError(f"No image configured for {model['id']} / {engine}")
             docker_full_cleanup()
             container = ENGINE_RUNNERS[engine](model, "continuous_batching", "default", port)
+            log.info("[preflight %d/%d] %s / %s: loading model...",
+                     index, len(checks), model["id"], engine)
             row["load_time_s"] = round(wait_for_ready(
                 port, config_module.HEALTH_CHECK_TIMEOUT_S,
-                config_module.HEALTH_CHECK_POLL_INTERVAL_S, container.name
+                config_module.HEALTH_CHECK_POLL_INTERVAL_S, container.name,
+                lambda elapsed: log.info(
+                    "[preflight %d/%d] %s / %s: still loading (%ds/%ds)",
+                    index, len(checks), model["id"], engine, elapsed,
+                    config_module.HEALTH_CHECK_TIMEOUT_S,
+                ),
             ), 2)
             served_model = get_served_model(port)
             row["served_model"] = served_model
             prompt = config_module.PROMPT_CASES[0]
+            log.info("[preflight %d/%d] %s / %s: sending smoke request...",
+                     index, len(checks), model["id"], engine)
             result = send_one_request(
                 f"http://localhost:{port}", prompt["text"], prompt["max_output_tokens"],
                 config_module.PER_REQUEST_TIMEOUT_S, 1, served_model, 0.0, 1.0
@@ -123,9 +138,15 @@ def run_preflight(matrix: list, config_module, port: int,
             row["smoke_latency_s"] = round(result.total_latency_s, 3)
             row["status"] = STATUS_DONE
             row["failure_reason"] = ""
+            log.info("[preflight %d/%d] %s / %s: PASS (load %.1fs, request %.3fs)",
+                     index, len(checks), model["id"], engine,
+                     row["load_time_s"], row["smoke_latency_s"])
         except Exception as error:
             row["status"] = classify_failure(error)
             row["failure_reason"] = str(error)[:2000]
+            log.warning("[preflight %d/%d] %s / %s: %s — %s",
+                        index, len(checks), model["id"], engine,
+                        row["status"], row["failure_reason"])
         finally:
             stop_container(container)
             try:
