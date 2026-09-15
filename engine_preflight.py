@@ -186,7 +186,10 @@ def run_preflight(matrix: list, config_module, port: int,
                     raise ConnectionError(f"vLLM image network check failed: {dns_value}")
                 row["network_check"] = f"huggingface.co={dns_value}"
             docker_full_cleanup()
-            container = ENGINE_RUNNERS[engine](model, "continuous_batching", "default", port)
+            # Preflight must answer only whether the model/engine can start.
+            # Use the smallest serving configuration so a batching/KV stress
+            # setting cannot incorrectly disqualify the whole model/engine pair.
+            container = ENGINE_RUNNERS[engine](model, "no_batching", "default", port)
             log.info("[preflight %d/%d] %s / %s: loading model...",
                      index, len(checks), model["id"], engine)
             row["load_time_s"] = round(wait_for_ready(

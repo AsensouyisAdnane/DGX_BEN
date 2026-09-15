@@ -92,6 +92,9 @@ ENGINES = {
     "vllm": {
         "image": "vllm/vllm-openai:latest",           # EDIT if pinning a version
         "container_port": 8000,
+        # Keep headroom for the OS/runtime on DGX Spark. This matches the
+        # NVIDIA launch example and avoids startup failure at vLLM's default.
+        "gpu_memory_utilization": 0.8,
     },
     "trtllm": {
         # TensorRT-LLM engines must be built per (model, precision, batching)

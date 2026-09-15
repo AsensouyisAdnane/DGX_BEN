@@ -46,6 +46,7 @@ def start_vllm(model: dict, batching: str, kv_cache: str, port: int) -> RunningC
         model["hf_path"],
         "--port", str(port),
         "--max-num-seqs", str(max_num_seqs),
+        "--gpu-memory-utilization", str(cfg.get("gpu_memory_utilization", 0.8)),
         "--trust-remote-code",
     ]
     if quant != "bf16":
