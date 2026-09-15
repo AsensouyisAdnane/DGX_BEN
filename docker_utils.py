@@ -88,7 +88,7 @@ def gpu_is_idle(max_mem_mb: int = 500) -> bool:
     snap = get_gpu_snapshot()
     if snap is None:
         return True  # can't check -> don't block the run
-    return snap["memory_used_mb"] <= max_mem_mb
+    return snap["memory_used_mb"] is None or snap["memory_used_mb"] <= max_mem_mb
 
 
 def wait_for_gpu_idle(max_mem_mb: int = 500, timeout_s: int = 60,
@@ -105,7 +105,7 @@ def wait_for_gpu_idle(max_mem_mb: int = 500, timeout_s: int = 60,
         time.sleep(poll_interval_s)
 
     snapshot = get_gpu_snapshot()
-    if snapshot is not None and snapshot["memory_used_mb"] > max_mem_mb:
+    if snapshot is not None and snapshot["memory_used_mb"] is not None and snapshot["memory_used_mb"] > max_mem_mb:
         raise RuntimeError(
             f"GPU memory did not fall below {max_mem_mb} MB within {timeout_s}s "
             f"(currently {snapshot['memory_used_mb']:.0f} MB)"
@@ -136,13 +136,9 @@ def get_gpu_snapshot() -> Optional[dict]:
     def optional_float(value: str) -> Optional[float]:
         return None if value.upper() in {"N/A", "[N/A]"} else float(value)
 
-    memory_used = optional_float(mem_used)
-    memory_total = optional_float(mem_total)
-    if memory_used is None or memory_total is None:
-        return None
     return {
-        "memory_used_mb": memory_used,
-        "memory_total_mb": memory_total,
+        "memory_used_mb": optional_float(mem_used),
+        "memory_total_mb": optional_float(mem_total),
         "utilization_pct": optional_float(util),
         "power_draw_w": optional_float(power),
         "temperature_c": optional_float(temp),
@@ -190,13 +186,13 @@ class GpuMonitor:
                 "gpu_temp_avg_c": None,
                 "gpu_temp_peak_c": None,
             }
-        mems = [s["memory_used_mb"] for s in self._samples]
+        mems = [s["memory_used_mb"] for s in self._samples if s["memory_used_mb"] is not None]
         utils = [s["utilization_pct"] for s in self._samples if s["utilization_pct"] is not None]
         temps = [s["temperature_c"] for s in self._samples if s["temperature_c"] is not None]
         powers = [s["power_draw_w"] for s in self._samples if s["power_draw_w"] is not None]
         return {
-            "gpu_mem_used_peak_mb": max(mems),
-            "gpu_mem_used_avg_mb": sum(mems) / len(mems),
+            "gpu_mem_used_peak_mb": max(mems) if mems else None,
+            "gpu_mem_used_avg_mb": (sum(mems) / len(mems)) if mems else None,
             "gpu_util_avg_pct": (sum(utils) / len(utils)) if utils else None,
             "gpu_power_avg_w": (sum(powers) / len(powers)) if powers else None,
             "gpu_temp_avg_c": (sum(temps) / len(temps)) if temps else None,
@@ -286,17 +282,18 @@ def save_container_logs(container: RunningContainer, trace_path: str) -> None:
     Path(trace_path).write_text(result.stdout + result.stderr)
 
 
-def wait_for_ready(port: int, timeout_s: int, poll_interval_s: int,
+def wait_for_ready(port: int, timeout_s: Optional[int], poll_interval_s: int,
                    container_name: Optional[str] = None,
-                   progress_callback: Optional[Callable[[int, Optional[str], str], None]] = None,
-                   progress_interval_s: int = 5) -> float:
-    """Poll the OpenAI-compatible /v1/models endpoint. Returns load time
-    in seconds, or raises TimeoutError."""
+                   progress_callback: Optional[Callable[[int, Optional[str], str, Optional[int], Optional[int]], None]] = None,
+                   progress_interval_s: int = 5,
+                   progress_path: Optional[str] = None) -> float:
+    """Wait for API readiness, with optional engine-cache progress tracing."""
     start = time.time()
     last_progress_report = -progress_interval_s
     last_container_log = ""
+    previous_size_mb = None
     url = f"http://localhost:{port}/v1/models"
-    while time.time() - start < timeout_s:
+    while True:
         latest_log = ""
         try:
             r = requests.get(url, timeout=5)
@@ -317,11 +314,36 @@ def wait_for_ready(port: int, timeout_s: int, poll_interval_s: int,
                 raise RuntimeError(f"Container exited before becoming ready: {detail}")
         elapsed = int(time.time() - start)
         if progress_callback and elapsed - last_progress_report >= progress_interval_s:
-            progress_callback(elapsed, container_state, latest_log if latest_log != last_container_log else "")
+            cache_size_mb = directory_size_mb(progress_path) if progress_path else None
+            cache_delta_mb = None
+            if cache_size_mb is not None and previous_size_mb is not None:
+                cache_delta_mb = cache_size_mb - previous_size_mb
+            progress_callback(
+                elapsed,
+                container_state,
+                latest_log if latest_log != last_container_log else "",
+                cache_size_mb,
+                cache_delta_mb,
+            )
             last_progress_report = elapsed
             last_container_log = latest_log
+            previous_size_mb = cache_size_mb
+        if timeout_s is not None and elapsed >= timeout_s:
+            raise TimeoutError(f"Service on port {port} did not become healthy within {timeout_s}s")
         time.sleep(poll_interval_s)
-    raise TimeoutError(f"Service on port {port} did not become healthy within {timeout_s}s")
+
+
+def directory_size_mb(path: Optional[str]) -> Optional[int]:
+    """Return host-cache size while an engine downloads model artifacts."""
+    if not path or not os.path.isdir(path):
+        return None
+    result = run_cmd(["du", "-sm", path], timeout=30)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        return int(result.stdout.split()[0])
+    except (ValueError, IndexError):
+        return None
 
 
 def get_served_model(port: int) -> str:

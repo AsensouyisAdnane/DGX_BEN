@@ -223,8 +223,9 @@ SAMPLING_PARAMETERS = [
 # 4. TIMEOUTS / SAFETY LIMITS
 # =========================================================================
 
-CONTAINER_START_TIMEOUT_S = 900     # big models can take a while to load
-HEALTH_CHECK_TIMEOUT_S = 900
+# None means wait for the engine's readiness callback instead of imposing a
+# total download/load deadline. Set an integer only when you want a hard cap.
+HEALTH_CHECK_TIMEOUT_S = None
 HEALTH_CHECK_POLL_INTERVAL_S = 5
 PER_REQUEST_TIMEOUT_S = 180
 GPU_MONITOR_INTERVAL_S = 2

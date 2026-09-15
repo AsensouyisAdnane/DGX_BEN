@@ -45,7 +45,7 @@ from docker_utils import (
     get_served_model,
     prepare_benchmark_prerequisites,
 )
-from engine_runners import ENGINE_RUNNERS
+from engine_runners import ENGINE_RUNNERS, model_artifact_path
 from bench_client import run_full_sweep
 from engine_preflight import STATUS_DONE, run_preflight
 
@@ -63,21 +63,34 @@ STATUS_TERMINATED = "terminated_with_error"
 
 
 def log_loading_progress(model_id: str, engine: str, elapsed: int, timeout_s: int,
-                         container_state: str | None, container_log: str) -> None:
+                         container_state: str | None, container_log: str,
+                         cache_size_mb: int | None, cache_delta_mb: int | None) -> None:
     snapshot = get_gpu_snapshot()
-    memory = "GPU memory unavailable"
+    memory = "GPU memory=N/A"
     if snapshot:
-        memory = (f"GPU memory={snapshot['memory_used_mb']:.0f}/"
-                  f"{snapshot['memory_total_mb']:.0f} MB")
+        if snapshot["memory_used_mb"] is not None:
+            memory = (f"GPU memory={snapshot['memory_used_mb']:.0f}/"
+                      f"{snapshot['memory_total_mb']:.0f} MB")
+        else:
+            memory = (f"GPU memory=N/A, utilization={snapshot['utilization_pct'] or 0:.0f}%, "
+                      f"power={snapshot['power_draw_w'] or 0:.1f}W, "
+                      f"temperature={snapshot['temperature_c'] or 0:.0f}C")
+    cache = "model cache=unavailable" if cache_size_mb is None else f"model cache={cache_size_mb} MB"
+    if cache_delta_mb:
+        cache += f" ({cache_delta_mb:+d} MB)"
     log_suffix = f", engine_log={container_log}" if container_log else ""
-    log.info("Loading %s on %s: %ss/%ss, container=%s, %s%s",
-             model_id, engine, elapsed, timeout_s,
-             container_state or "unknown", memory, log_suffix)
+    limit = "no total deadline" if timeout_s is None else f"{timeout_s}s limit"
+    log.info("Loading %s on %s: %ss, %s, container=%s, %s, %s%s",
+             model_id, engine, elapsed, limit,
+             container_state or "unknown", memory, cache, log_suffix)
 
 
 def log_benchmark_gpu(snapshot: dict) -> None:
-    log.info("Benchmark GPU: memory=%.0f/%.0f MB, utilization=%s%%, power=%s W, temperature=%s C",
-             snapshot["memory_used_mb"], snapshot["memory_total_mb"],
+    memory = "N/A" if snapshot["memory_used_mb"] is None else (
+        f"{snapshot['memory_used_mb']:.0f}/{snapshot['memory_total_mb']:.0f} MB"
+    )
+    log.info("Benchmark GPU: memory=%s, utilization=%s%%, power=%s W, temperature=%s C",
+             memory,
              f"{snapshot['utilization_pct']:.0f}" if snapshot["utilization_pct"] is not None else "N/A",
              f"{snapshot['power_draw_w']:.0f}" if snapshot["power_draw_w"] is not None else "N/A",
              f"{snapshot['temperature_c']:.0f}" if snapshot["temperature_c"] is not None else "N/A")
@@ -174,10 +187,12 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
         load_time_s = wait_for_ready(
             port, startup_timeout_s, config.HEALTH_CHECK_POLL_INTERVAL_S,
             container.name,
-            lambda elapsed, state, engine_log: log_loading_progress(
-                exp["model"]["id"], exp["engine"], elapsed, startup_timeout_s, state, engine_log
+            lambda elapsed, state, engine_log, cache_size, cache_delta: log_loading_progress(
+                exp["model"]["id"], exp["engine"], elapsed, startup_timeout_s, state, engine_log,
+                cache_size, cache_delta,
             ),
             config.PROGRESS_INTERVAL_S,
+            model_artifact_path(exp["model"], exp["engine"]),
         )
         row["load_time_s"] = round(load_time_s, 2)
         served_model = get_served_model(port)

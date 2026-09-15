@@ -15,7 +15,7 @@ from docker_utils import (
     stop_container,
     wait_for_ready,
 )
-from engine_runners import ENGINE_RUNNERS
+from engine_runners import ENGINE_RUNNERS, model_artifact_path
 
 PREFLIGHT_COLUMNS = [
     "timestamp",
@@ -43,16 +43,26 @@ log = logging.getLogger("dgx_bench")
 
 def log_loading_progress(index: int, total: int, model_id: str, engine: str,
                          elapsed: int, timeout_s: int, container_state: str | None,
-                         container_log: str) -> None:
+                         container_log: str, cache_size_mb: int | None,
+                         cache_delta_mb: int | None) -> None:
     snapshot = get_gpu_snapshot()
-    memory = "GPU memory unavailable"
+    memory = "GPU memory=N/A"
     if snapshot:
-        memory = (f"GPU memory={snapshot['memory_used_mb']:.0f}/"
-                  f"{snapshot['memory_total_mb']:.0f} MB")
+        if snapshot["memory_used_mb"] is not None:
+            memory = (f"GPU memory={snapshot['memory_used_mb']:.0f}/"
+                      f"{snapshot['memory_total_mb']:.0f} MB")
+        else:
+            memory = (f"GPU memory=N/A, utilization={snapshot['utilization_pct'] or 0:.0f}%, "
+                      f"power={snapshot['power_draw_w'] or 0:.1f}W, "
+                      f"temperature={snapshot['temperature_c'] or 0:.0f}C")
+    cache = "model cache=unavailable" if cache_size_mb is None else f"model cache={cache_size_mb} MB"
+    if cache_delta_mb:
+        cache += f" ({cache_delta_mb:+d} MB)"
     log_suffix = f", engine_log={container_log}" if container_log else ""
-    log.info("[preflight %d/%d] %s / %s: loading %ds/%ds, container=%s, %s%s",
-             index, total, model_id, engine, elapsed, timeout_s,
-             container_state or "unknown", memory, log_suffix)
+    limit = "no total deadline" if timeout_s is None else f"{timeout_s}s limit"
+    log.info("[preflight %d/%d] %s / %s: loading %ds, %s, container=%s, %s, %s%s",
+             index, total, model_id, engine, elapsed, limit,
+             container_state or "unknown", memory, cache, log_suffix)
 
 
 def engine_image(model: dict, engine: str, config_module) -> str:
@@ -145,11 +155,12 @@ def run_preflight(matrix: list, config_module, port: int,
             row["load_time_s"] = round(wait_for_ready(
                 port, startup_timeout_s,
                 config_module.HEALTH_CHECK_POLL_INTERVAL_S, container.name,
-                lambda elapsed, state, engine_log: log_loading_progress(
+                lambda elapsed, state, engine_log, cache_size, cache_delta: log_loading_progress(
                     index, len(checks), model["id"], engine, elapsed,
-                    startup_timeout_s, state, engine_log,
+                    startup_timeout_s, state, engine_log, cache_size, cache_delta,
                 ),
                 config_module.PROGRESS_INTERVAL_S,
+                model_artifact_path(model, engine),
             ), 2)
             served_model = get_served_model(port)
             row["served_model"] = served_model

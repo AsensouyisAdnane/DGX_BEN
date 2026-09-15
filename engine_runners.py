@@ -22,6 +22,18 @@ from docker_utils import RunningContainer, docker_run_detached, ContainerStartEr
 HF_CACHE_MOUNT = ["-v", f"{os.path.expanduser('~')}/.cache/huggingface:/root/.cache/huggingface"]
 
 
+def model_artifact_path(model: dict, engine: str) -> str:
+    """Host path whose growth indicates model/profile download progress."""
+    if engine == "vllm":
+        return os.path.expanduser("~/.cache/huggingface")
+    if engine == "nim":
+        return os.path.expanduser("~/.cache/nim")
+    cfg = ENGINES["trtllm"]
+    return cfg["engine_dir_template"].format(
+        model_id=model["id"], quant=model["quantization_default"], batching="continuous_batching"
+    )
+
+
 def start_vllm(model: dict, batching: str, kv_cache: str, port: int) -> RunningContainer:
     cfg = ENGINES["vllm"]
     name = f"bench_vllm_{model['id']}_{uuid.uuid4().hex[:6]}"
