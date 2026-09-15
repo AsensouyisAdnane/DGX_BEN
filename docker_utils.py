@@ -127,15 +127,24 @@ def get_gpu_snapshot() -> Optional[dict]:
     )
     if result.returncode != 0 or not result.stdout.strip():
         return None
-    # DGX Spark has a single unified GPU; if multiple lines show up, take GPU0
+    # DGX Spark has a single unified GPU; if multiple lines show up, take GPU0.
+    # Some NVIDIA drivers report unsupported telemetry fields as N/A.
     line = result.stdout.strip().splitlines()[0]
     mem_used, mem_total, util, power, temp = [x.strip() for x in line.split(",")]
+
+    def optional_float(value: str) -> Optional[float]:
+        return None if value.upper() in {"N/A", "[N/A]"} else float(value)
+
+    memory_used = optional_float(mem_used)
+    memory_total = optional_float(mem_total)
+    if memory_used is None or memory_total is None:
+        return None
     return {
-        "memory_used_mb": float(mem_used),
-        "memory_total_mb": float(mem_total),
-        "utilization_pct": float(util),
-        "power_draw_w": float(power) if power not in ("N/A", "[N/A]") else None,
-        "temperature_c": float(temp),
+        "memory_used_mb": memory_used,
+        "memory_total_mb": memory_total,
+        "utilization_pct": optional_float(util),
+        "power_draw_w": optional_float(power),
+        "temperature_c": optional_float(temp),
     }
 
 
@@ -177,16 +186,16 @@ class GpuMonitor:
                 "gpu_temp_peak_c": None,
             }
         mems = [s["memory_used_mb"] for s in self._samples]
-        utils = [s["utilization_pct"] for s in self._samples]
-        temps = [s["temperature_c"] for s in self._samples]
+        utils = [s["utilization_pct"] for s in self._samples if s["utilization_pct"] is not None]
+        temps = [s["temperature_c"] for s in self._samples if s["temperature_c"] is not None]
         powers = [s["power_draw_w"] for s in self._samples if s["power_draw_w"] is not None]
         return {
             "gpu_mem_used_peak_mb": max(mems),
             "gpu_mem_used_avg_mb": sum(mems) / len(mems),
-            "gpu_util_avg_pct": sum(utils) / len(utils),
+            "gpu_util_avg_pct": (sum(utils) / len(utils)) if utils else None,
             "gpu_power_avg_w": (sum(powers) / len(powers)) if powers else None,
-            "gpu_temp_avg_c": sum(temps) / len(temps),
-            "gpu_temp_peak_c": max(temps),
+            "gpu_temp_avg_c": (sum(temps) / len(temps)) if temps else None,
+            "gpu_temp_peak_c": max(temps) if temps else None,
         }
 
 
