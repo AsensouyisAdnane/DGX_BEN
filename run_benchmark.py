@@ -38,6 +38,8 @@ from docker_utils import (
     docker_full_cleanup,
     GpuMonitor,
     get_driver_versions,
+    get_gpu_snapshot,
+    save_container_logs,
     stop_container,
     wait_for_ready,
     get_served_model,
@@ -58,6 +60,27 @@ STATUS_RUNNING = "running"
 STATUS_DONE = "done"
 STATUS_CANNOT_RUN = "cannot_run"
 STATUS_TERMINATED = "terminated_with_error"
+
+
+def log_loading_progress(model_id: str, engine: str, elapsed: int, timeout_s: int,
+                         container_state: str | None, container_log: str) -> None:
+    snapshot = get_gpu_snapshot()
+    memory = "GPU memory unavailable"
+    if snapshot:
+        memory = (f"GPU memory={snapshot['memory_used_mb']:.0f}/"
+                  f"{snapshot['memory_total_mb']:.0f} MB")
+    log_suffix = f", engine_log={container_log}" if container_log else ""
+    log.info("Loading %s on %s: %ss/%ss, container=%s, %s%s",
+             model_id, engine, elapsed, timeout_s,
+             container_state or "unknown", memory, log_suffix)
+
+
+def log_benchmark_gpu(snapshot: dict) -> None:
+    log.info("Benchmark GPU: memory=%.0f/%.0f MB, utilization=%s%%, power=%s W, temperature=%s C",
+             snapshot["memory_used_mb"], snapshot["memory_total_mb"],
+             f"{snapshot['utilization_pct']:.0f}" if snapshot["utilization_pct"] is not None else "N/A",
+             f"{snapshot['power_draw_w']:.0f}" if snapshot["power_draw_w"] is not None else "N/A",
+             f"{snapshot['temperature_c']:.0f}" if snapshot["temperature_c"] is not None else "N/A")
 
 
 def build_experiment_matrix() -> list:
@@ -121,12 +144,17 @@ def classify_failure(error: Exception) -> str:
 def run_one_experiment(exp: dict, summary_logger: ResultLogger,
                         detailed_logger: ResultLogger, port: int) -> None:
     row = base_row(exp)
+    startup_timeout_s = exp["model"].get("startup_timeout_s", config.HEALTH_CHECK_TIMEOUT_S)
+    row["container_log_file"] = f"{config.TRACE_DIR}/{exp['experiment_id']}.log"
     versions = get_driver_versions()
     row.update(versions)
 
     t_exp_start = time.time()
     container = None
-    monitor = GpuMonitor(interval_s=config.GPU_MONITOR_INTERVAL_S)
+    monitor = GpuMonitor(
+        interval_s=config.GPU_MONITOR_INTERVAL_S,
+        sample_callback=log_benchmark_gpu,
+    )
 
     log.info(f"=== START {exp['experiment_id']} ===")
     # Persist an in-flight marker before Docker/GPU work starts. If the
@@ -144,12 +172,12 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
 
         log.info("Phase 3/4 loading: waiting for the model service to become ready...")
         load_time_s = wait_for_ready(
-            port, config.HEALTH_CHECK_TIMEOUT_S, config.HEALTH_CHECK_POLL_INTERVAL_S,
+            port, startup_timeout_s, config.HEALTH_CHECK_POLL_INTERVAL_S,
             container.name,
-            lambda elapsed: log.info(
-                f"Still loading {exp['model']['id']} on {exp['engine']}: "
-                f"{elapsed}s/{config.HEALTH_CHECK_TIMEOUT_S}s"
+            lambda elapsed, state, engine_log: log_loading_progress(
+                exp["model"]["id"], exp["engine"], elapsed, startup_timeout_s, state, engine_log
             ),
+            config.PROGRESS_INTERVAL_S,
         )
         row["load_time_s"] = round(load_time_s, 2)
         served_model = get_served_model(port)
@@ -230,6 +258,10 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
         log.warning(f"Experiment failed: status={row['status']} reason={row['failure_reason']}")
 
     finally:
+        try:
+            save_container_logs(container, row["container_log_file"])
+        except Exception as trace_error:
+            log.warning("Could not save container trace: %s", trace_error)
         stop_container(container)
         log.info("Cleanup: stopping container and waiting for GPU memory release...")
         try:

@@ -36,6 +36,7 @@ SUMMARY_COLUMNS = [
     "status",
     "worked",                 # yes / no
     "failure_reason",
+    "container_log_file",
     "load_time_s",
     "max_stable_concurrency",
     "throughput_tokens_per_s",
@@ -77,6 +78,22 @@ class ResultLogger:
             with open(csv_path, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=self.columns)
                 writer.writeheader()
+            return
+
+        with open(csv_path, "r", newline="") as f:
+            reader = csv.DictReader(f)
+            existing_columns = reader.fieldnames or []
+            rows = list(reader)
+        if existing_columns != self.columns:
+            temp_path = f"{csv_path}.tmp"
+            with open(temp_path, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=self.columns)
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow({column: row.get(column, "") for column in self.columns})
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, csv_path)
 
     def append_row(self, row: dict) -> None:
         # Fill any missing columns with empty string so schema drift doesn't crash the run

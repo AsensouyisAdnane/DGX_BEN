@@ -11,6 +11,7 @@ to repeat) before every single experiment, not just between models.
 
 import json
 import os
+from pathlib import Path
 import subprocess
 import threading
 import time
@@ -152,8 +153,10 @@ class GpuMonitor:
     """Background sampler. Start it right before load-testing begins, stop
     it right after, then pull peak/avg stats for the CSV row."""
 
-    def __init__(self, interval_s: float = 2.0):
+    def __init__(self, interval_s: float = 2.0,
+                 sample_callback: Optional[Callable[[dict], None]] = None):
         self.interval_s = interval_s
+        self.sample_callback = sample_callback
         self._samples = []
         self._stop_event = threading.Event()
         self._thread = None
@@ -163,6 +166,8 @@ class GpuMonitor:
             snap = get_gpu_snapshot()
             if snap:
                 self._samples.append(snap)
+                if self.sample_callback:
+                    self.sample_callback(snap)
             self._stop_event.wait(self.interval_s)
 
     def start(self):
@@ -272,31 +277,49 @@ def stop_container(container: RunningContainer) -> None:
     run_cmd(["docker", "rm", "-f", container.name], timeout=30)
 
 
+def save_container_logs(container: RunningContainer, trace_path: str) -> None:
+    """Persist the engine's Docker logs before the container is removed."""
+    if container is None:
+        return
+    result = run_cmd(["docker", "logs", container.name], timeout=30)
+    Path(trace_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(trace_path).write_text(result.stdout + result.stderr)
+
+
 def wait_for_ready(port: int, timeout_s: int, poll_interval_s: int,
                    container_name: Optional[str] = None,
-                   progress_callback: Optional[Callable[[int], None]] = None) -> float:
+                   progress_callback: Optional[Callable[[int, Optional[str], str], None]] = None,
+                   progress_interval_s: int = 5) -> float:
     """Poll the OpenAI-compatible /v1/models endpoint. Returns load time
     in seconds, or raises TimeoutError."""
     start = time.time()
-    last_progress_report = -30
+    last_progress_report = -progress_interval_s
+    last_container_log = ""
     url = f"http://localhost:{port}/v1/models"
     while time.time() - start < timeout_s:
+        latest_log = ""
         try:
             r = requests.get(url, timeout=5)
             if r.status_code == 200:
                 return time.time() - start
         except requests.RequestException:
             pass
+        container_state = None
         if container_name:
             state = run_cmd(["docker", "inspect", "-f", "{{.State.Status}}", container_name])
-            if state.returncode == 0 and state.stdout.strip() in {"dead", "exited"}:
+            container_state = state.stdout.strip() if state.returncode == 0 else "unavailable"
+            log_result = run_cmd(["docker", "logs", "--tail", "10", container_name])
+            log_lines = (log_result.stdout + log_result.stderr).strip().splitlines()
+            latest_log = log_lines[-1][-500:] if log_lines else ""
+            if container_state in {"dead", "exited"}:
                 logs = run_cmd(["docker", "logs", "--tail", "50", container_name])
                 detail = (logs.stdout + logs.stderr).strip()[-2000:]
                 raise RuntimeError(f"Container exited before becoming ready: {detail}")
         elapsed = int(time.time() - start)
-        if progress_callback and elapsed - last_progress_report >= 30:
-            progress_callback(elapsed)
+        if progress_callback and elapsed - last_progress_report >= progress_interval_s:
+            progress_callback(elapsed, container_state, latest_log if latest_log != last_container_log else "")
             last_progress_report = elapsed
+            last_container_log = latest_log
         time.sleep(poll_interval_s)
     raise TimeoutError(f"Service on port {port} did not become healthy within {timeout_s}s")
 

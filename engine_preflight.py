@@ -7,7 +7,14 @@ from datetime import datetime, timezone
 
 from bench_client import send_one_request
 from csv_logger import ResultLogger
-from docker_utils import docker_full_cleanup, get_served_model, stop_container, wait_for_ready
+from docker_utils import (
+    docker_full_cleanup,
+    get_gpu_snapshot,
+    get_served_model,
+    save_container_logs,
+    stop_container,
+    wait_for_ready,
+)
 from engine_runners import ENGINE_RUNNERS
 
 PREFLIGHT_COLUMNS = [
@@ -20,6 +27,7 @@ PREFLIGHT_COLUMNS = [
     "quantization",
     "status",
     "failure_reason",
+    "container_log_file",
     "load_time_s",
     "smoke_latency_s",
     "served_model",
@@ -31,6 +39,20 @@ STATUS_DONE = "done"
 STATUS_CANNOT_RUN = "cannot_run"
 STATUS_TERMINATED = "terminated_with_error"
 log = logging.getLogger("dgx_bench")
+
+
+def log_loading_progress(index: int, total: int, model_id: str, engine: str,
+                         elapsed: int, timeout_s: int, container_state: str | None,
+                         container_log: str) -> None:
+    snapshot = get_gpu_snapshot()
+    memory = "GPU memory unavailable"
+    if snapshot:
+        memory = (f"GPU memory={snapshot['memory_used_mb']:.0f}/"
+                  f"{snapshot['memory_total_mb']:.0f} MB")
+    log_suffix = f", engine_log={container_log}" if container_log else ""
+    log.info("[preflight %d/%d] %s / %s: loading %ds/%ds, container=%s, %s%s",
+             index, total, model_id, engine, elapsed, timeout_s,
+             container_state or "unknown", memory, log_suffix)
 
 
 def engine_image(model: dict, engine: str, config_module) -> str:
@@ -106,6 +128,10 @@ def run_preflight(matrix: list, config_module, port: int,
             "hf_token_present": bool(os.environ.get("HF_TOKEN")),
             "ngc_api_key_present": bool(os.environ.get("NGC_API_KEY")),
         }
+        startup_timeout_s = model.get("startup_timeout_s", config_module.HEALTH_CHECK_TIMEOUT_S)
+        row["container_log_file"] = (
+            f"{config_module.TRACE_DIR}/preflight_{model['id']}__{engine}.log"
+        )
         container = None
         try:
             log.info("[preflight %d/%d] %s / %s: checking image and starting service...",
@@ -117,13 +143,13 @@ def run_preflight(matrix: list, config_module, port: int,
             log.info("[preflight %d/%d] %s / %s: loading model...",
                      index, len(checks), model["id"], engine)
             row["load_time_s"] = round(wait_for_ready(
-                port, config_module.HEALTH_CHECK_TIMEOUT_S,
+                port, startup_timeout_s,
                 config_module.HEALTH_CHECK_POLL_INTERVAL_S, container.name,
-                lambda elapsed: log.info(
-                    "[preflight %d/%d] %s / %s: still loading (%ds/%ds)",
+                lambda elapsed, state, engine_log: log_loading_progress(
                     index, len(checks), model["id"], engine, elapsed,
-                    config_module.HEALTH_CHECK_TIMEOUT_S,
+                    startup_timeout_s, state, engine_log,
                 ),
+                config_module.PROGRESS_INTERVAL_S,
             ), 2)
             served_model = get_served_model(port)
             row["served_model"] = served_model
@@ -149,6 +175,10 @@ def run_preflight(matrix: list, config_module, port: int,
                         index, len(checks), model["id"], engine,
                         row["status"], row["failure_reason"])
         finally:
+            try:
+                save_container_logs(container, row["container_log_file"])
+            except Exception as trace_error:
+                log.warning("Could not save container trace: %s", trace_error)
             stop_container(container)
             try:
                 docker_full_cleanup()

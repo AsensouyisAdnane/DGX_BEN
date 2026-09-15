@@ -21,6 +21,10 @@ Nothing in run_benchmark.py should need to change when you tweak the matrix.
 #   every engine ships a prebuilt path for every model -- if a container
 #   or engine file is missing, the run is logged as a clean FAILURE
 #   (worked=no, failure_reason=...) rather than crashing the script.
+#
+# startup_timeout_s is optional per model. It is a hung-startup safety limit,
+# not evidence of readiness; Docker state, engine logs, GPU memory, API health,
+# and a smoke inference request provide the actual trace.
 
 MODELS = [
     {
@@ -224,6 +228,8 @@ HEALTH_CHECK_TIMEOUT_S = 900
 HEALTH_CHECK_POLL_INTERVAL_S = 5
 PER_REQUEST_TIMEOUT_S = 180
 GPU_MONITOR_INTERVAL_S = 2
+PROGRESS_INTERVAL_S = 5
+TRACE_DIR = "engine_traces"
 
 # =========================================================================
 # 5. OUTPUT FILES
