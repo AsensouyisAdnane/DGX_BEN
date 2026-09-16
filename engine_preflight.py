@@ -17,6 +17,7 @@ from docker_utils import (
     save_container_logs,
     stop_container,
     wait_for_ready,
+    find_available_port,
 )
 from engine_runners import ENGINE_RUNNERS, model_artifact_path
 
@@ -190,6 +191,11 @@ def run_preflight(matrix: list, config_module, port: int,
                     raise ConnectionError(f"vLLM image network check failed: {dns_value}")
                 row["network_check"] = f"huggingface.co={dns_value}"
             docker_full_cleanup()
+            check_port = find_available_port(port, ports_needed=2 if engine == "nim" else 1)
+            if check_port != port:
+                log.info("[preflight %d/%d] %s / %s: port %d busy; using %d",
+                         index, len(checks), model["id"], engine, port, check_port)
+            port = check_port
             # Preflight must answer only whether the model/engine can start.
             # Use the smallest serving configuration so a batching/KV stress
             # setting cannot incorrectly disqualify the whole model/engine pair.

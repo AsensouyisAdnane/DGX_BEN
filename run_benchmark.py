@@ -43,6 +43,7 @@ from docker_utils import (
     stop_container,
     wait_for_ready,
     get_served_model,
+    find_available_port,
     prepare_benchmark_prerequisites,
 )
 from engine_runners import ENGINE_RUNNERS, model_artifact_path
@@ -171,6 +172,9 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
     try:
         log.info("Phase 1/4 cleanup: removing previous benchmark state and waiting for GPU memory...")
         docker_full_cleanup()
+        run_port = find_available_port(port, ports_needed=2 if exp["engine"] == "nim" else 1)
+        if run_port != port:
+            log.info("Port %d busy; using free port %d for this experiment", port, run_port)
 
         runner = ENGINE_RUNNERS[exp["engine"]]
         # Runners historically read quantization_default from the model. Keep
@@ -179,11 +183,11 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
         log.info(f"Phase 2/4 startup: engine={exp['engine']} model={exp['model']['id']} "
                  f"quantization={exp['quantization']} batching={exp['batching']} "
                  f"kv_cache={exp['kv_cache']}...")
-        container = runner(run_model, exp["batching"], exp["kv_cache"], port)
+        container = runner(run_model, exp["batching"], exp["kv_cache"], run_port)
 
         log.info("Phase 3/4 loading: waiting for the model service to become ready...")
         load_time_s = wait_for_ready(
-            port, startup_timeout_s, config.HEALTH_CHECK_POLL_INTERVAL_S,
+            run_port, startup_timeout_s, config.HEALTH_CHECK_POLL_INTERVAL_S,
             container.name,
             lambda elapsed, state, engine_log, cache_size, cache_delta: log_loading_progress(
                 exp["model"]["id"], exp["engine"], exp["quantization"], elapsed,
@@ -194,12 +198,12 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
             model_artifact_path(run_model, exp["engine"], exp["batching"]),
         )
         row["load_time_s"] = round(load_time_s, 2)
-        served_model = get_served_model(port)
+        served_model = get_served_model(run_port)
 
         log.info("Phase 4/4 benchmarking: running concurrency sweep...")
         monitor.start()
         sweep = run_full_sweep(
-            base_url=f"http://localhost:{port}",
+            base_url=f"http://localhost:{run_port}",
             concurrency_levels=config.CONCURRENCY_LEVELS,
             num_requests_per_level=config.REQUESTS_PER_CONCURRENCY_LEVEL,
             prompt=exp["prompt_case"]["text"],

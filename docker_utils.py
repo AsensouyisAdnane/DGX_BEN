@@ -11,6 +11,7 @@ to repeat) before every single experiment, not just between models.
 
 import json
 import os
+import socket
 from pathlib import Path
 
 
@@ -26,6 +27,25 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import requests
+
+
+def find_available_port(start_port: int, ports_needed: int = 1) -> int:
+    """Find a free localhost port range without killing host services."""
+    for port in range(start_port, start_port + 100):
+        sockets = []
+        try:
+            for candidate in range(port, port + ports_needed):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("127.0.0.1", candidate))
+                sockets.append(sock)
+            return port
+        except OSError:
+            pass
+        finally:
+            for sock in sockets:
+                sock.close()
+    raise RuntimeError(f"No free localhost port range found near {start_port}")
 
 
 def run_cmd(cmd: list, timeout: Optional[int] = None, check: bool = False):

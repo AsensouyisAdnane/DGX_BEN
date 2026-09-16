@@ -79,6 +79,8 @@ MODELS = [
         "active_params_b": 32,
         "type": "Dense",
         "quantization_default": "bf16",
+        # 131072 needs slightly more KV cache than this DGX Spark exposes.
+        "max_model_len": 65536,
         "engines": ["vllm", "trtllm", "nim"],
     },
     {

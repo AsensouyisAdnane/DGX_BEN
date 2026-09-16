@@ -127,6 +127,7 @@ def start_nim(model: dict, batching: str, kv_cache: str, port: int) -> RunningCo
     ]
     if os.environ.get("NGC_API_KEY"):
         docker_args += ["-e", "NGC_API_KEY"]
+    docker_args += ["-e", f"NIM_SERVER_PORT={port}", "-e", f"NIM_HEALTH_PORT={port + 1}"]
     entrypoint_args = []  # NIM containers self-configure; batching/KV knobs
     # are mostly fixed per NIM profile. If the specific NIM image exposes
     # env vars for this (e.g. NIM_MAX_BATCH_SIZE), add them here:
