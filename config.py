@@ -73,12 +73,12 @@ MODELS = [
         "engines": ["vllm", "trtllm", "nim"],
     },
     {
-        "id": "llama-4-scout-17b-16e",
-        "hf_path": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-        "size_b": 109,
-        "active_params_b": 17,
-        "type": "MoE (natively multimodal)",
-        "quantization_default": "fp8",
+        "id": "baichuan-m2-32b",
+        "hf_path": "baichuan-inc/Baichuan-M2-32B",
+        "size_b": 32,
+        "active_params_b": 32,
+        "type": "Dense",
+        "quantization_default": "bf16",
         "engines": ["vllm", "trtllm", "nim"],
     },
     {
