@@ -13,6 +13,7 @@ finding ("engine X has no supported path for model Y on this hardware"),
 not a bug to hide.
 """
 
+import logging
 import os
 import uuid
 
@@ -20,6 +21,7 @@ from config import ENGINES
 from docker_utils import RunningContainer, docker_run_detached, ContainerStartError
 
 HF_CACHE_MOUNT = ["-v", f"{os.path.expanduser('~')}/.cache/huggingface:/root/.cache/huggingface"]
+log = logging.getLogger("dgx_bench")
 
 
 def model_artifact_path(model: dict, engine: str) -> str:
@@ -49,12 +51,23 @@ def start_vllm(model: dict, batching: str, kv_cache: str, port: int) -> RunningC
         "--gpu-memory-utilization", str(cfg.get("gpu_memory_utilization", 0.8)),
         "--trust-remote-code",
     ]
+    if model.get("max_model_len") is not None:
+        entrypoint_args += ["--max-model-len", str(model["max_model_len"])]
     if quant != "bf16":
         entrypoint_args += ["--quantization", quant]
     if kv_cache == "fp8_kv_cache":
         entrypoint_args += ["--kv-cache-dtype", "fp8"]
 
     docker_args = [*HF_CACHE_MOUNT, "-e", "HF_TOKEN"]
+    if os.environ.get("HF_TOKEN"):
+        log.info("%s / vllm: HF_TOKEN is set; forwarding it to Docker", model["id"])
+    else:
+        log.warning(
+            "%s / vllm: HF_TOKEN is missing from the benchmark environment; "
+            "export it in this terminal before starting the benchmark. "
+            "A token saved in the mounted Hugging Face cache may still be used.",
+            model["id"],
+        )
 
     cid = docker_run_detached(cfg["image"], name, port, docker_args, entrypoint_args)
     return RunningContainer(name=name, port=port, container_id=cid)

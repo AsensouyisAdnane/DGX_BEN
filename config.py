@@ -61,6 +61,10 @@ MODELS = [
         "active_params_b": 70,
         "type": "Dense (reasoning-distilled)",
         "quantization_default": "fp8",    # bf16 (~140GB) will not fit + KV cache
+        # 131072 tokens needs 40 GiB KV cache on this checkpoint, but this
+        # rig exposes about 25.67 GiB after loading the weights. 65536 keeps
+        # substantial long-context coverage while fitting the available KV.
+        "max_model_len": 65536,
         "engines": ["vllm", "trtllm", "nim"],
     },
     {
@@ -104,7 +108,8 @@ ENGINES = {
         #   ./trtllm_engines/<model_id>__<quantization>__<batching>/
         # If that path is missing, the run is logged as a failed experiment
         # with a clear reason instead of crashing.
-        "image": "nvcr.io/nvidia/tensorrt-llm/release:latest",  # EDIT
+        # NVIDIA publishes versioned tags; `latest` is not a manifest.
+        "image": "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc24",
         "container_port": 8001,
         "engine_dir_template": "./trtllm_engines/{model_id}__{quant}__{batching}",
     },

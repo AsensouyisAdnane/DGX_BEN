@@ -38,7 +38,7 @@ from docker_utils import (
     docker_full_cleanup,
     GpuMonitor,
     get_driver_versions,
-    get_gpu_snapshot,
+    get_ram_summary,
     save_container_logs,
     stop_container,
     wait_for_ready,
@@ -65,16 +65,7 @@ STATUS_TERMINATED = "terminated_with_error"
 def log_loading_progress(model_id: str, engine: str, elapsed: int, timeout_s: int,
                          container_state: str | None, container_log: str,
                          cache_size_mb: int | None, cache_delta_mb: int | None) -> None:
-    snapshot = get_gpu_snapshot()
-    memory = "GPU memory=N/A"
-    if snapshot:
-        if snapshot["memory_used_mb"] is not None:
-            memory = (f"GPU memory={snapshot['memory_used_mb']:.0f}/"
-                      f"{snapshot['memory_total_mb']:.0f} MB")
-        else:
-            memory = (f"GPU memory=N/A, utilization={snapshot['utilization_pct'] or 0:.0f}%, "
-                      f"power={snapshot['power_draw_w'] or 0:.1f}W, "
-                      f"temperature={snapshot['temperature_c'] or 0:.0f}C")
+    memory = get_ram_summary()
     cache = "model cache=unavailable" if cache_size_mb is None else f"model cache={cache_size_mb} MB"
     if cache_delta_mb:
         cache += f" ({cache_delta_mb:+d} MB)"
@@ -85,15 +76,8 @@ def log_loading_progress(model_id: str, engine: str, elapsed: int, timeout_s: in
              container_state or "unknown", memory, cache, log_suffix)
 
 
-def log_benchmark_gpu(snapshot: dict) -> None:
-    memory = "N/A" if snapshot["memory_used_mb"] is None else (
-        f"{snapshot['memory_used_mb']:.0f}/{snapshot['memory_total_mb']:.0f} MB"
-    )
-    log.info("Benchmark GPU: memory=%s, utilization=%s%%, power=%s W, temperature=%s C",
-             memory,
-             f"{snapshot['utilization_pct']:.0f}" if snapshot["utilization_pct"] is not None else "N/A",
-             f"{snapshot['power_draw_w']:.0f}" if snapshot["power_draw_w"] is not None else "N/A",
-             f"{snapshot['temperature_c']:.0f}" if snapshot["temperature_c"] is not None else "N/A")
+def log_benchmark_ram(_snapshot: dict) -> None:
+    log.info("Benchmark: %s", get_ram_summary())
 
 
 def build_experiment_matrix() -> list:
@@ -166,7 +150,7 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
     container = None
     monitor = GpuMonitor(
         interval_s=config.GPU_MONITOR_INTERVAL_S,
-        sample_callback=log_benchmark_gpu,
+        sample_callback=log_benchmark_ram,
     )
 
     log.info(f"=== START {exp['experiment_id']} ===")

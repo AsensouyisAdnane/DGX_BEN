@@ -45,6 +45,22 @@ def run_cmd(cmd: list, timeout: Optional[int] = None, check: bool = False):
         raise RuntimeError(f"Command timed out after {timeout}s: {' '.join(cmd)}") from e
 
 
+def get_ram_summary() -> str:
+    """Report host system RAM, not GPU-only memory, using Linux free."""
+    try:
+        result = run_cmd(["free", "-b"], timeout=5)
+        if result.returncode != 0:
+            return "System RAM=unavailable"
+        fields = next(line.split() for line in result.stdout.splitlines()
+                      if line.startswith("Mem:"))
+        total, used, available = (int(fields[index]) / (1024 ** 3)
+                                  for index in (1, 2, 6))
+        return (f"System RAM={used:.1f}/{total:.1f} GiB used, "
+                f"available={available:.1f} GiB")
+    except (RuntimeError, StopIteration, ValueError, IndexError):
+        return "System RAM=unavailable"
+
+
 def ensure_docker_image(image: str, timeout_s: int = 3600) -> None:
     """Ensure an image is local before container startup is timed."""
     inspect = run_cmd(["docker", "image", "inspect", image], timeout=30)

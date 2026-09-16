@@ -10,7 +10,7 @@ from csv_logger import ResultLogger
 from docker_utils import (
     docker_full_cleanup,
     CONTAINER_NETWORK_MODE,
-    get_gpu_snapshot,
+    get_ram_summary,
     get_served_model,
     ensure_docker_image,
     run_cmd,
@@ -42,6 +42,7 @@ PREFLIGHT_COLUMNS = [
 STATUS_DONE = "done"
 STATUS_CANNOT_RUN = "cannot_run"
 STATUS_TERMINATED = "terminated_with_error"
+PREFLIGHT_CHECK_VERSION = "2"
 log = logging.getLogger("dgx_bench")
 
 
@@ -49,16 +50,7 @@ def log_loading_progress(index: int, total: int, model_id: str, engine: str,
                          elapsed: int, timeout_s: int, container_state: str | None,
                          container_log: str, cache_size_mb: int | None,
                          cache_delta_mb: int | None) -> None:
-    snapshot = get_gpu_snapshot()
-    memory = "GPU memory=N/A"
-    if snapshot:
-        if snapshot["memory_used_mb"] is not None:
-            memory = (f"GPU memory={snapshot['memory_used_mb']:.0f}/"
-                      f"{snapshot['memory_total_mb']:.0f} MB")
-        else:
-            memory = (f"GPU memory=N/A, utilization={snapshot['utilization_pct'] or 0:.0f}%, "
-                      f"power={snapshot['power_draw_w'] or 0:.1f}W, "
-                      f"temperature={snapshot['temperature_c'] or 0:.0f}C")
+    memory = get_ram_summary()
     cache = "model cache=unavailable" if cache_size_mb is None else f"model cache={cache_size_mb} MB"
     if cache_delta_mb:
         cache += f" ({cache_delta_mb:+d} MB)"
@@ -75,8 +67,17 @@ def engine_image(model: dict, engine: str, config_module) -> str:
 
 
 def check_id(model: dict, engine: str, config_module) -> str:
-    return "__".join((model["id"], model["hf_path"], engine, model["quantization_default"],
-                      engine_image(model, engine, config_module) or "unconfigured"))
+    engine_config = config_module.ENGINES[engine]
+    return "__".join((
+        model["id"],
+        model["hf_path"],
+        engine,
+        model["quantization_default"],
+        engine_image(model, engine, config_module) or "unconfigured",
+        f"max_model_len={model.get('max_model_len', 'engine_default')}",
+        f"gpu_memory_utilization={engine_config.get('gpu_memory_utilization', 'engine_default')}",
+        f"preflight_version={PREFLIGHT_CHECK_VERSION}",
+    ))
 
 
 def load_cached_checks(logger: ResultLogger) -> dict:
