@@ -42,7 +42,9 @@ PREFLIGHT_COLUMNS = [
 STATUS_DONE = "done"
 STATUS_CANNOT_RUN = "cannot_run"
 STATUS_TERMINATED = "terminated_with_error"
-PREFLIGHT_CHECK_VERSION = "2"
+# Bump this whenever launch semantics change; cached cannot_run results must
+# not mask a newly supported execution path.
+PREFLIGHT_CHECK_VERSION = "3"
 log = logging.getLogger("dgx_bench")
 
 
@@ -76,6 +78,7 @@ def check_id(model: dict, engine: str, config_module) -> str:
         engine_image(model, engine, config_module) or "unconfigured",
         f"max_model_len={model.get('max_model_len', 'engine_default')}",
         f"gpu_memory_utilization={engine_config.get('gpu_memory_utilization', 'engine_default')}",
+        f"serve_hf_model_directly={engine_config.get('serve_hf_model_directly', False)}",
         f"preflight_version={PREFLIGHT_CHECK_VERSION}",
     ))
 
