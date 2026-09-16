@@ -4,8 +4,8 @@ run_benchmark.py
 -----------------
 DGX Spark inference benchmark orchestrator.
 
-For every (model x engine x batching x kv_cache x prompt x sampling) combination, in that
-order, smallest model first:
+For every (engine x model x quantization x batching x kv_cache x prompt x sampling)
+combination, engines are completed one at a time:
   1. Full docker + GPU cleanup (identical infra for every run)
   2. Start the container for this configuration
   3. Wait for it to become healthy (records cold-start / load time)
@@ -62,7 +62,8 @@ STATUS_CANNOT_RUN = "cannot_run"
 STATUS_TERMINATED = "terminated_with_error"
 
 
-def log_loading_progress(model_id: str, engine: str, elapsed: int, timeout_s: int,
+def log_loading_progress(model_id: str, engine: str, quantization: str,
+                         elapsed: int, timeout_s: int,
                          container_state: str | None, container_log: str,
                          cache_size_mb: int | None, cache_delta_mb: int | None) -> None:
     memory = get_ram_summary()
@@ -71,8 +72,8 @@ def log_loading_progress(model_id: str, engine: str, elapsed: int, timeout_s: in
         cache += f" ({cache_delta_mb:+d} MB)"
     log_suffix = f", engine_log={container_log}" if container_log else ""
     limit = "no total deadline" if timeout_s is None else f"{timeout_s}s limit"
-    log.info("Loading %s on %s: %ss, %s, container=%s, %s, %s%s",
-             model_id, engine, elapsed, limit,
+    log.info("Loading %s on %s (%s): %ss, %s, container=%s, %s, %s%s",
+             model_id, engine, quantization, elapsed, limit,
              container_state or "unknown", memory, cache, log_suffix)
 
 
@@ -81,21 +82,30 @@ def log_benchmark_ram(_snapshot: dict) -> None:
 
 
 def build_experiment_matrix() -> list:
-    """Cartesian product of model x engine x batching x kv_cache, in the
-    order models are declared in config.py (smallest -> biggest)."""
+    """Build the matrix engine-first, then model, then quantization/config."""
     matrix = []
-    for model in config.MODELS:
-        for engine in model["engines"]:
-            for batching, kv_cache, prompt_case, sampling in itertools.product(
-                config.BATCHING_MODES, config.KV_CACHE_MODES,
-                config.PROMPT_CASES, config.SAMPLING_PARAMETERS
-            ):
-                exp_id = (f"{model['id']}__{engine}__{batching}__{kv_cache}__"
-                          f"{prompt_case['id']}__{sampling['id']}")
-                matrix.append({"experiment_id": exp_id, "model": model,
-                               "engine": engine, "batching": batching,
-                               "kv_cache": kv_cache, "prompt_case": prompt_case,
-                               "sampling": sampling})
+    engine_order = list(dict.fromkeys(
+        engine for model in config.MODELS for engine in model["engines"]
+    ))
+    for engine in engine_order:
+        for model in config.MODELS:
+            if engine not in model["engines"]:
+                continue
+            quantizations = model.get("quantizations_by_engine", {}).get(
+                engine, [model["quantization_default"]]
+            )
+            for quantization in quantizations:
+                for batching, kv_cache, prompt_case, sampling in itertools.product(
+                    config.BATCHING_MODES, config.KV_CACHE_MODES,
+                    config.PROMPT_CASES, config.SAMPLING_PARAMETERS
+                ):
+                    exp_id = (f"{model['id']}__{engine}__{quantization}__"
+                              f"{batching}__{kv_cache}__{prompt_case['id']}__"
+                              f"{sampling['id']}")
+                    matrix.append({"experiment_id": exp_id, "model": model,
+                                   "engine": engine, "quantization": quantization,
+                                   "batching": batching, "kv_cache": kv_cache,
+                                   "prompt_case": prompt_case, "sampling": sampling})
     return matrix
 
 
@@ -110,7 +120,7 @@ def base_row(exp: dict) -> dict:
         "model_active_params_b": model["active_params_b"],
         "model_type": model["type"],
         "engine": exp["engine"],
-        "quantization": model["quantization_default"],
+        "quantization": exp["quantization"],
         "batching_mode": exp["batching"],
         "kv_cache_mode": exp["kv_cache"],
         "benchmark_dataset": config.BENCHMARK_DATASET,
@@ -163,20 +173,25 @@ def run_one_experiment(exp: dict, summary_logger: ResultLogger,
         docker_full_cleanup()
 
         runner = ENGINE_RUNNERS[exp["engine"]]
+        # Runners historically read quantization_default from the model. Keep
+        # that interface while applying the matrix variant for this run.
+        run_model = {**exp["model"], "quantization_default": exp["quantization"]}
         log.info(f"Phase 2/4 startup: engine={exp['engine']} model={exp['model']['id']} "
-                 f"batching={exp['batching']} kv_cache={exp['kv_cache']}...")
-        container = runner(exp["model"], exp["batching"], exp["kv_cache"], port)
+                 f"quantization={exp['quantization']} batching={exp['batching']} "
+                 f"kv_cache={exp['kv_cache']}...")
+        container = runner(run_model, exp["batching"], exp["kv_cache"], port)
 
         log.info("Phase 3/4 loading: waiting for the model service to become ready...")
         load_time_s = wait_for_ready(
             port, startup_timeout_s, config.HEALTH_CHECK_POLL_INTERVAL_S,
             container.name,
             lambda elapsed, state, engine_log, cache_size, cache_delta: log_loading_progress(
-                exp["model"]["id"], exp["engine"], elapsed, startup_timeout_s, state, engine_log,
+                exp["model"]["id"], exp["engine"], exp["quantization"], elapsed,
+                startup_timeout_s, state, engine_log,
                 cache_size, cache_delta,
             ),
             config.PROGRESS_INTERVAL_S,
-            model_artifact_path(exp["model"], exp["engine"]),
+            model_artifact_path(run_model, exp["engine"], exp["batching"]),
         )
         row["load_time_s"] = round(load_time_s, 2)
         served_model = get_served_model(port)
@@ -327,6 +342,8 @@ def main():
         if exp["experiment_id"] not in completed
         and (exp["model"]["id"], exp["engine"]) in passed_pairs
     ]
+    engine_order = list(dict.fromkeys(exp["engine"] for exp in matrix))
+    log.info("Execution order: %s", " -> ".join(engine_order))
     log.info(f"Total experiments: {len(matrix)} | Remaining to run: {len(remaining)}")
 
     for i, exp in enumerate(remaining, 1):

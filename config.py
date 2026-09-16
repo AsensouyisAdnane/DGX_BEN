@@ -7,6 +7,8 @@ Edit THIS file to add/remove models, engines, or configurations.
 Nothing in run_benchmark.py should need to change when you tweak the matrix.
 """
 
+import os
+
 # =========================================================================
 # 1. MODELS  (ordered smallest -> biggest on purpose; the orchestrator
 #             preserves this order so cheap/fast runs happen first and
@@ -16,6 +18,9 @@ Nothing in run_benchmark.py should need to change when you tweak the matrix.
 # quantization_default: the precision the run should use by default on a
 #   single DGX Spark (128GB unified memory). Anything that will not fit
 #   in bf16 alongside a reasonable KV cache is pre-quantized.
+# quantizations_by_engine (optional): additional candidates to benchmark.
+#   Use only formats supported by the checkpoint/engine. NIM normally has one
+#   quantization embedded in each model image, so leave it at the default.
 #
 # engines: which inference engines we will ATTEMPT for this model. Not
 #   every engine ships a prebuilt path for every model -- if a container
@@ -94,24 +99,19 @@ MODELS = [
 
 ENGINES = {
     "vllm": {
-        "image": "vllm/vllm-openai:latest",           # EDIT if pinning a version
+        # Matches the NVIDIA command: export VLLM_IMAGE=... before launch.
+        "image": os.environ.get("VLLM_IMAGE", "vllm/vllm-openai:latest"),
         "container_port": 8000,
         # Keep headroom for the OS/runtime on DGX Spark. This matches the
         # NVIDIA launch example and avoids startup failure at vLLM's default.
         "gpu_memory_utilization": 0.8,
     },
     "trtllm": {
-        # TensorRT-LLM engines must be built per (model, precision, batching)
-        # ahead of time with `trtllm-build`. This script does NOT build them
-        # for you (that step is model-specific and slow). It expects a
-        # pre-built engine directory at:
-        #   ./trtllm_engines/<model_id>__<quantization>__<batching>/
-        # If that path is missing, the run is logged as a failed experiment
-        # with a clear reason instead of crashing.
-        # NVIDIA publishes versioned tags; `latest` is not a manifest.
+        # rc24 can serve a local/Hugging Face checkpoint directly; this avoids
+        # requiring a separately compiled engine directory for every variant.
         "image": "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc24",
         "container_port": 8001,
-        "engine_dir_template": "./trtllm_engines/{model_id}__{quant}__{batching}",
+        "serve_hf_model_directly": True,
     },
     "nim": {
         # NIM containers are per-model microservices pulled from NGC.

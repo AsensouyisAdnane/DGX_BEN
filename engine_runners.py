@@ -24,7 +24,7 @@ HF_CACHE_MOUNT = ["-v", f"{os.path.expanduser('~')}/.cache/huggingface:/root/.ca
 log = logging.getLogger("dgx_bench")
 
 
-def model_artifact_path(model: dict, engine: str) -> str:
+def model_artifact_path(model: dict, engine: str, batching: str = "continuous_batching") -> str:
     """Host path whose growth indicates model/profile download progress."""
     if engine == "vllm":
         repository = model["hf_path"].replace("/", "--")
@@ -32,8 +32,11 @@ def model_artifact_path(model: dict, engine: str) -> str:
     if engine == "nim":
         return os.path.expanduser("~/.cache/nim")
     cfg = ENGINES["trtllm"]
+    if cfg.get("serve_hf_model_directly"):
+        repository = model["hf_path"].replace("/", "--")
+        return os.path.expanduser(f"~/.cache/huggingface/hub/models--{repository}")
     return cfg["engine_dir_template"].format(
-        model_id=model["id"], quant=model["quantization_default"], batching="continuous_batching"
+        model_id=model["id"], quant=model["quantization_default"], batching=batching
     )
 
 
@@ -75,23 +78,28 @@ def start_vllm(model: dict, batching: str, kv_cache: str, port: int) -> RunningC
 
 def start_trtllm(model: dict, batching: str, kv_cache: str, port: int) -> RunningContainer:
     cfg = ENGINES["trtllm"]
-    quant = model["quantization_default"]
-    engine_dir = cfg["engine_dir_template"].format(
-        model_id=model["id"], quant=quant, batching=batching
-    )
-
-    if not os.path.isdir(engine_dir):
-        raise FileNotFoundError(
-            f"No pre-built TensorRT-LLM engine at '{engine_dir}'. "
-            f"Build it first with `trtllm-build` for model={model['hf_path']}, "
-            f"quant={quant}, batching={batching}. Logging this as a failed run."
-        )
 
     name = f"bench_trtllm_{model['id']}_{uuid.uuid4().hex[:6]}"
-    docker_args = ["-v", f"{os.path.abspath(engine_dir)}:/engine"]
+    if cfg.get("serve_hf_model_directly"):
+        model_source = model["hf_path"]
+        docker_args = [*HF_CACHE_MOUNT, "-e", "HF_TOKEN"]
+    else:
+        quant = model["quantization_default"]
+        engine_dir = cfg["engine_dir_template"].format(
+            model_id=model["id"], quant=quant, batching=batching
+        )
+        if not os.path.isdir(engine_dir):
+            raise FileNotFoundError(
+                f"No pre-built TensorRT-LLM engine at '{engine_dir}'. "
+                f"Build it first with `trtllm-build` for model={model['hf_path']}, "
+                f"quant={quant}, batching={batching}. Logging this as a failed run."
+            )
+        model_source = "/engine"
+        docker_args = ["-v", f"{os.path.abspath(engine_dir)}:/engine"]
     entrypoint_args = [
-        "trtllm-serve", "/engine",
+        "trtllm-serve", model_source,
         "--port", str(port),
+        "--max_batch_size", "1" if batching == "no_batching" else "256",
     ]
     if kv_cache == "fp8_kv_cache":
         entrypoint_args += ["--kv_cache_type", "fp8"]

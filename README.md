@@ -1,7 +1,8 @@
 # DGX Spark Inference Benchmark
 
-Runs the full model x engine x batching x KV-cache x prompt x sampling matrix on a single DGX
-Spark, cleaning the Docker/GPU environment before **every** run so all
+Runs the full engine x model x quantization x batching x KV-cache x prompt x sampling matrix
+on a single DGX Spark. It completes all configurations for one inference engine before moving
+to the next, while cleaning the Docker/GPU environment before **every** run so all
 configurations are tested on identical infrastructure. It writes an in-flight
 status marker before each run and a final status row immediately after it
 finishes, so a restart can identify the single experiment that was in flight.
@@ -27,17 +28,16 @@ finishes, so a restart can identify the single experiment that was in flight.
 
 2. **Edit `config.py`:**
    - `ENGINES["vllm"]["image"]`, `ENGINES["trtllm"]["image"]` — pin versions.
+   - Add an optional `quantizations_by_engine` list inside a model to test
+     additional weight-quantization candidates. The default is used when it
+     is omitted. Keep NIM to the quantization embedded in its image.
    - `ENGINES["nim"]["image_by_model"]` — map each model id to its real NIM
      image tag. An unmapped or unsupported model is recorded as `cannot_run`
      in the preflight report and its matrix rows are skipped.
 
-3. **Pre-build TensorRT-LLM engines.** Unlike vLLM, TRT-LLM needs a compiled
-   engine per (model, quantization, batching) before this script runs. Put each one at:
-   ```
-   ./trtllm_engines/<model_id>__<quantization>__<batching>/
-   ```
-   e.g. `./trtllm_engines/gpt-oss-20b__mxfp4__continuous_batching/`.
-   A missing directory is recorded as `cannot_run` in the preflight report.
+3. TensorRT-LLM uses the local Hugging Face cache directly with the configured
+   `1.3.0rc24` image, so no `trtllm_engines/` directory is required. The
+   checkpoint must be supported by that TensorRT-LLM release.
 
 4. Set credentials required by the selected model images:
    ```bash
@@ -66,8 +66,9 @@ python3 run_benchmark.py --refresh-preflight
 python3 run_benchmark.py --no-resume
 ```
 
-The script logs to both the console and `benchmark_run.log`. Leave it
-running in `tmux`/`screen` — the default 432-experiment matrix across 6 models
+The script logs to both the console and `benchmark_run.log`. Each startup log
+includes the engine, model, selected quantization, batching, and KV-cache mode.
+Leave it running in `tmux`/`screen` — the default 576-experiment matrix across 6 models
 will take many hours, most of it model load time for the bigger models.
 
 ## If the DGX crashes or you need to stop it
@@ -83,8 +84,7 @@ Just re-run `python3 run_benchmark.py`. It reads the latest row for each
   `terminated_with_error`), model, engine, batching, KV-cache mode, worked
   (yes/no) + failure reason, load time,
   max stable concurrency, throughput (tokens/s and req/s), TTFT and
-  latency (mean/p50/p95), GPU memory/utilization/power/temperature
-  (peak + avg), driver/CUDA version, total run duration. This is the file
+  latency (mean/p50/p95), driver/CUDA version, total run duration. This is the file
   to load into your notebook for the report and charts.
 
 - **`results_detailed_requests.csv`** — every individual request's raw
@@ -93,7 +93,7 @@ Just re-run `python3 run_benchmark.py`. It reads the latest row for each
   than just the aggregated percentiles in the summary file.
 
 - **`engine_preflight.csv`** — one smoke check per model/engine pair. A check
-  starts the container with continuous batching and the default KV cache,
+  starts the container with the conservative single-sequence setting and the default KV cache,
   waits for `/v1/models`, then sends one greedy request. The full matrix runs
   only for pairs whose preflight status is `done`. `cannot_run` results are
   cached; use `--refresh-preflight` after changing an image, token, engine,
@@ -124,9 +124,8 @@ plot temperature/power curves instead of just peak/avg in the notebook.
   (`NIM_MAX_BATCH_SIZE`, `NIM_KV_CACHE_DTYPE` env vars) — verify these
   against the actual NIM image's supported configuration env vars, they
   vary per model microservice.
-- TRT-LLM engines must be built ahead of time; this script deliberately
-  does not automate `trtllm-build` because the right flags are highly
-  model- and precision-specific.
+- TensorRT-LLM direct checkpoint serving depends on model support in the
+  selected image; unsupported architectures are recorded as failed runs.
 - Docker image layers are kept between runs (`keep_images=True` in
   `docker_full_cleanup`) so multi-GB pulls aren't repeated — only
   containers/networks are torn down between experiments.
